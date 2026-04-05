@@ -14,20 +14,11 @@ using NetCord.Hosting.Services.ComponentInteractions;
 var builder = Host.CreateApplicationBuilder(args);
 
 var environmentFileName = $"appsettings.{builder.Environment.EnvironmentName}.json";
-var configurationCandidates = new[]
-{
-    Path.Combine(builder.Environment.ContentRootPath, environmentFileName),
-    Path.Combine(AppContext.BaseDirectory, environmentFileName),
-};
-
-var selectedConfigurationPath = configurationCandidates.FirstOrDefault(File.Exists)
-    ?? throw new InvalidOperationException(
-        $"Configuration file '{environmentFileName}' was not found. " +
-        $"Checked: {string.Join(", ", configurationCandidates)}");
 
 builder.Configuration.Sources.Clear();
 builder.Configuration
-    .AddJsonFile(selectedConfigurationPath, optional: false, reloadOnChange: true)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddJsonFile(environmentFileName, optional: true, reloadOnChange: true)
     .AddEnvironmentVariables();
 
 var configuredDiscordToken = builder.Configuration[$"{DiscordOptions.SectionName}:Token"];
@@ -35,7 +26,7 @@ if (string.IsNullOrWhiteSpace(configuredDiscordToken))
 {
     throw new InvalidOperationException(
         $"Discord token is empty for environment '{builder.Environment.EnvironmentName}'. " +
-        $"Set '{DiscordOptions.SectionName}:Token' in '{selectedConfigurationPath}' " +
+        $"Set '{DiscordOptions.SectionName}:Token' in '{environmentFileName}' " +
         $"or via environment variable '{DiscordOptions.SectionName}__Token'.");
 }
 
