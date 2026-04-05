@@ -521,9 +521,7 @@ public sealed class FeedEmbedFactory(
 
         for (var i = index - 1; i >= 0; i--)
         {
-            var candidate = relevantHistory[i];
-            var candidateType = candidate.Type;
-            var candidateEvent = candidate.Event;
+            var (candidateEvent, candidateType) = relevantHistory[i];
 
             if (candidateType != FeedEventType.Nomination || candidateEvent.UserId is null)
                 continue;
