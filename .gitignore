@@ -83,6 +83,7 @@ _ReSharper*/
 .env
 .env.*
 appsettings.Development.json
+appsettings.Production.json
 secrets.json
 
 # =========================
