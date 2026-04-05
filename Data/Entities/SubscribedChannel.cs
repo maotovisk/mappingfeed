@@ -14,5 +14,5 @@ public sealed class SubscribedChannel
 
     public string? EventTypes { get; set; }
 
-    public long? GroupId { get; set; }
+    public string? GroupId { get; set; }
 }

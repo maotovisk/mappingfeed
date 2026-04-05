@@ -1,3 +1,4 @@
+using MappingFeed.Feed;
 using NetCord;
 using NetCord.Rest;
 using NetCord.Services.ApplicationCommands;
@@ -27,56 +28,134 @@ public sealed class FeedTypeAutocompleteProvider : IAutocompleteProvider<Autocom
     }
 }
 
-public sealed class SubscribeAdditionalFiltersAutocompleteProvider : IAutocompleteProvider<AutocompleteInteractionContext>
+public sealed class SubscribeRulesetAutocompleteProvider : IAutocompleteProvider<AutocompleteInteractionContext>
 {
-    private static readonly IReadOnlyList<string> MapFilters =
+    private static readonly IReadOnlyList<string> RulesetChoices =
     [
-        "ruleset:osu",
-        "ruleset:taiko",
-        "ruleset:catch",
-        "ruleset:mania",
-        "ruleset:osu,mania",
-        "event_type:nominate",
-        "event_type:nomination_reset",
-        "event_type:qualify",
-        "event_type:disqualify",
-        "event_type:rank",
-        "event_type:unrank",
-        "event_type:rank,qualify",
-    ];
-
-    private static readonly IReadOnlyList<string> GroupFilters =
-    [
-        "group_id:7",
-        "group_id:11",
-        "group_id:16",
-        "group_id:28",
-        "group_id:31",
-        "group_id:32",
-        "group_id:35",
-        "group_id:48",
-        "group_id:50",
+        "osu",
+        "taiko",
+        "catch",
+        "mania",
     ];
 
     public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?> GetChoicesAsync(
         ApplicationCommandInteractionDataOption option,
         AutocompleteInteractionContext context)
     {
+        if (AutocompleteHelpers.IsFeedType(context, FeedType.Group))
+            return new ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?>([]);
+
+        return AutocompleteHelpers.FilterChoices(option, RulesetChoices);
+    }
+}
+
+public sealed class SubscribeEventTypeAutocompleteProvider : IAutocompleteProvider<AutocompleteInteractionContext>
+{
+    private static readonly IReadOnlyList<string> EventTypeChoices =
+    [
+        "nominate",
+        "nomination_reset",
+        "qualify",
+        "disqualify",
+        "rank",
+        "unrank"
+    ];
+
+    public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?> GetChoicesAsync(
+        ApplicationCommandInteractionDataOption option,
+        AutocompleteInteractionContext context)
+    {
+        if (AutocompleteHelpers.IsFeedType(context, FeedType.Group))
+            return new ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?>([]);
+
+        return AutocompleteHelpers.FilterChoices(option, EventTypeChoices);
+    }
+}
+
+public sealed class SubscribeGroupIdAutocompleteProvider : IAutocompleteProvider<AutocompleteInteractionContext>
+{
+    private static readonly IReadOnlyList<string> GroupIdChoices =
+    [
+        "7",
+        "11",
+        "16",
+        "28",
+        "31",
+        "32",
+        "35",
+        "48",
+        "50",
+    ];
+
+    public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?> GetChoicesAsync(
+        ApplicationCommandInteractionDataOption option,
+        AutocompleteInteractionContext context)
+    {
+        if (AutocompleteHelpers.IsFeedType(context, FeedType.Map))
+            return new ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?>([]);
+
+        return AutocompleteHelpers.FilterChoices(option, GroupIdChoices);
+    }
+}
+
+internal static class AutocompleteHelpers
+{
+    private static readonly char[] CsvSeparators = [',', '|'];
+
+    public static bool IsFeedType(AutocompleteInteractionContext context, FeedType targetType)
+    {
         var feedTypeValue = context.Interaction.Data.Options
             .FirstOrDefault(x => string.Equals(x.Name, "type", StringComparison.OrdinalIgnoreCase))
             ?.Value;
 
-        var source = string.Equals(feedTypeValue?.Trim(), "group", StringComparison.OrdinalIgnoreCase)
-            ? GroupFilters
-            : MapFilters;
+        return FeedEnumExtensions.TryParseFeedType(feedTypeValue, out var feedType) && feedType == targetType;
+    }
 
-        var input = option.Value?.Trim() ?? string.Empty;
+    public static ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?> FilterChoices(
+        ApplicationCommandInteractionDataOption option,
+        IReadOnlyList<string> source)
+    {
+        var input = option.Value ?? string.Empty;
+        var selections = ParseCsvSelections(input);
+        var selectedValues = selections.selectedValues;
+        var currentToken = selections.currentToken;
+        var prefix = selectedValues.Count == 0
+            ? string.Empty
+            : string.Join(",", selectedValues) + ",";
+
         var filtered = source
-            .Where(x => string.IsNullOrWhiteSpace(input) || x.Contains(input, StringComparison.OrdinalIgnoreCase))
+            .Where(x => !selectedValues.Contains(x, StringComparer.OrdinalIgnoreCase))
+            .Where(x => string.IsNullOrWhiteSpace(currentToken) || x.Contains(currentToken, StringComparison.OrdinalIgnoreCase))
             .Take(25)
-            .Select(x => new ApplicationCommandOptionChoiceProperties(x, x))
+            .Select(x =>
+            {
+                var value = string.IsNullOrEmpty(prefix)
+                    ? x
+                    : prefix + x;
+                return new ApplicationCommandOptionChoiceProperties(value, value);
+            })
             .ToList();
 
         return new ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(filtered);
+    }
+
+    private static (List<string> selectedValues, string currentToken) ParseCsvSelections(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return ([], string.Empty);
+
+        var parts = input.Split(CsvSeparators, StringSplitOptions.None);
+        if (parts.Length == 1)
+            return ([], parts[0].Trim());
+
+        var selectedValues = parts
+            .Take(parts.Length - 1)
+            .Select(x => x.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var currentToken = parts[^1].Trim();
+        return (selectedValues, currentToken);
     }
 }

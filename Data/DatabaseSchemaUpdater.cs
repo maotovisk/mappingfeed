@@ -14,7 +14,7 @@ public static class DatabaseSchemaUpdater
 
         await EnsureColumnAsync(db, "subscribed_channels", "rulesets", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "subscribed_channels", "event_types", "TEXT", cancellationToken);
-        await EnsureColumnAsync(db, "subscribed_channels", "group_id", "INTEGER", cancellationToken);
+        await EnsureColumnAsync(db, "subscribed_channels", "group_id", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "raw_event", "TEXT", cancellationToken);
         await BackfillNullTextColumnAsync(db, "group_events", "raw_event", "{}", cancellationToken);
         await BackfillNullTextColumnAsync(db, "beatmapset_events", "raw_event", "{}", cancellationToken);

@@ -178,18 +178,18 @@ public static class FeedEnumExtensions
         out FeedType feedType,
         out HashSet<Ruleset>? rulesets,
         out HashSet<FeedEventType>? eventTypes,
-        out long? groupId,
+        out HashSet<long>? groupIds,
         out string? error)
     {
         rulesets = null;
         eventTypes = null;
-        groupId = null;
+        groupIds = null;
         error = null;
 
         if (string.IsNullOrWhiteSpace(value))
         {
             feedType = default;
-            error = "Invalid argument. Use `map` or `group`; optional `ruleset:osu,mania`, `event_type:rank,qualify`, or `group_id:28`.";
+            error = "Invalid argument. Use `map` or `group`; optional `ruleset:osu,mania`, `event_type:rank,qualify`, or `group_id:28,32`.";
             return false;
         }
 
@@ -267,7 +267,7 @@ public static class FeedEnumExtensions
             }
 
             feedType = default;
-            error = $"Unknown token `{token}`. Use `map` or `group`, and optional `ruleset:osu,mania`, `event_type:rank,qualify`, `group_id:28`.";
+            error = $"Unknown token `{token}`. Use `map` or `group`, and optional `ruleset:osu,mania`, `event_type:rank,qualify`, `group_id:28,32`.";
             return false;
         }
 
@@ -332,13 +332,27 @@ public static class FeedEnumExtensions
 
         if (!string.IsNullOrWhiteSpace(groupIdToken))
         {
-            if (!long.TryParse(groupIdToken, out var parsedGroupId) || parsedGroupId <= 0)
+            var cleaned = groupIdToken.Trim().Trim('[', ']');
+            var parsedGroupIdsToken = new HashSet<long>();
+
+            foreach (var item in cleaned.Split([',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                error = $"Invalid group id `{groupIdToken}`. Use a positive integer, e.g. `group_id:28`.";
+                if (!long.TryParse(item, out var parsedGroupId) || parsedGroupId <= 0)
+                {
+                    error = $"Invalid group id `{item}`. Use positive integers, e.g. `group_id:28,32`.";
+                    return false;
+                }
+
+                parsedGroupIdsToken.Add(parsedGroupId);
+            }
+
+            if (parsedGroupIdsToken.Count == 0)
+            {
+                error = "Group id filter is empty. Use for example `group_id:28,32`.";
                 return false;
             }
 
-            groupId = parsedGroupId;
+            groupIds = parsedGroupIdsToken;
         }
 
         if (feedType == FeedType.Group && rulesets is not null)
@@ -353,7 +367,7 @@ public static class FeedEnumExtensions
             return false;
         }
 
-        if (feedType == FeedType.Map && groupId is not null)
+        if (feedType == FeedType.Map && groupIds is not null)
         {
             error = "Group id filter only applies to `group` feed subscriptions.";
             return false;
@@ -434,5 +448,41 @@ public static class FeedEnumExtensions
         return string.Join(", ", eventTypes
             .OrderBy(x => x)
             .Select(ToCommandValue));
+    }
+
+    public static string? SerializeGroupIds(IReadOnlyCollection<long>? groupIds)
+    {
+        if (groupIds is null || groupIds.Count == 0)
+            return null;
+
+        return string.Join("|", groupIds
+            .Where(x => x > 0)
+            .Distinct()
+            .OrderBy(x => x));
+    }
+
+    public static HashSet<long>? DeserializeGroupIds(string? serializedGroupIds)
+    {
+        if (string.IsNullOrWhiteSpace(serializedGroupIds))
+            return null;
+
+        var groupIds = new HashSet<long>();
+        foreach (var part in serializedGroupIds.Split([',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (long.TryParse(part, out var groupId) && groupId > 0)
+                groupIds.Add(groupId);
+        }
+
+        return groupIds.Count == 0 ? null : groupIds;
+    }
+
+    public static string FormatGroupIdsForDisplay(string? serializedGroupIds)
+    {
+        var groupIds = DeserializeGroupIds(serializedGroupIds);
+        if (groupIds is null)
+            return "all";
+
+        return string.Join(", ", groupIds
+            .OrderBy(x => x));
     }
 }

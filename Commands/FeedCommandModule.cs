@@ -1,12 +1,15 @@
 using MappingFeed.Data;
-using MappingFeed.Data.Entities;
 using MappingFeed.Feed;
 using Microsoft.EntityFrameworkCore;
+using NetCord;
+using NetCord.Rest;
 using NetCord.Services.ApplicationCommands;
 
 namespace MappingFeed.Commands;
 
-public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> dbContextFactory)
+public sealed class FeedCommandModule(
+    IDbContextFactory<MappingFeedDbContext> dbContextFactory,
+    FeedSetupSessionStore setupSessionStore)
     : ApplicationCommandModule<ApplicationCommandContext>
 {
     [SlashCommand("subscribe-feed", "Subscribe the current channel to a feed type.")]
@@ -24,7 +27,7 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
             AutocompleteProviderType = typeof(SubscribeEventTypeAutocompleteProvider))]
         string? eventType = null,
         [SlashCommandParameter(
-            Description = "Optional group id (e.g. 28)",
+            Description = "Optional group ids (e.g. 28 or 28,32)",
             AutocompleteProviderType = typeof(SubscribeGroupIdAutocompleteProvider))]
         string? groupId = null)
     {
@@ -43,7 +46,7 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
                 out var feedType,
                 out var rulesets,
                 out var eventTypes,
-                out var parsedGroupId,
+                out var parsedGroupIds,
                 out var parseError))
             return parseError ?? "Invalid argument.";
 
@@ -51,40 +54,31 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
             return "This command only works in server channels.";
 
         var channelId = checked((long)Context.Channel.Id);
-        var serializedRulesets = FeedEnumExtensions.SerializeRulesets(rulesets);
-        var serializedEventTypes = FeedEnumExtensions.SerializeEventTypes(eventTypes);
+        return await FeedSubscriptionOperations.UpsertSubscriptionAsync(
+            dbContextFactory,
+            channelId,
+            feedType,
+            rulesets,
+            eventTypes,
+            parsedGroupIds);
+    }
 
-        await using var db = await dbContextFactory.CreateDbContextAsync();
+    [SlashCommand("setup-feed", "Interactive setup form for the current channel feed subscription.")]
+    public InteractionMessageProperties SetupFeedAsync()
+    {
+        if (Context.Interaction.GuildId is null)
+            return new InteractionMessageProperties()
+                .WithContent("This command only works in server channels.")
+                .WithFlags(MessageFlags.Ephemeral);
 
-        var existingSubscription = await db.SubscribedChannels
-            .FirstOrDefaultAsync(x => x.ChannelId == channelId && x.FeedType == feedType);
+        var channelId = checked((long)Context.Channel.Id);
+        var session = setupSessionStore.StartOrReset(
+            Context.User.Id,
+            Context.Interaction.GuildId,
+            channelId);
 
-        if (existingSubscription is not null)
-        {
-            if (string.Equals(existingSubscription.Rulesets, serializedRulesets, StringComparison.Ordinal) &&
-                string.Equals(existingSubscription.EventTypes, serializedEventTypes, StringComparison.Ordinal) &&
-                existingSubscription.GroupId == parsedGroupId)
-                return $"This channel is already subscribed to `{feedType.ToCommandValue()}` ({BuildFilterSummary(feedType, existingSubscription.Rulesets, existingSubscription.EventTypes, existingSubscription.GroupId)}).";
-
-            existingSubscription.Rulesets = serializedRulesets;
-            existingSubscription.EventTypes = serializedEventTypes;
-            existingSubscription.GroupId = parsedGroupId;
-            await db.SaveChangesAsync();
-            return $"Updated `{feedType.ToCommandValue()}` subscription ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, parsedGroupId)}).";
-        }
-
-        db.SubscribedChannels.Add(new SubscribedChannel
-        {
-            ChannelId = channelId,
-            FeedType = feedType,
-            LastEventId = 0,
-            Rulesets = serializedRulesets,
-            EventTypes = serializedEventTypes,
-            GroupId = parsedGroupId,
-        });
-
-        await db.SaveChangesAsync();
-        return $"Subscribed this channel to `{feedType.ToCommandValue()}` ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, parsedGroupId)}).";
+        return FeedSetupUi.BuildMessage(session, "Pick the options below, then press Save.")
+            .WithFlags(MessageFlags.Ephemeral);
     }
 
     [SlashCommand("unsubscribe-feed", "Unsubscribe the current channel from a feed type (supports optional ruleset argument syntax).")]
@@ -135,24 +129,8 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
             return "This channel has no feed subscriptions.";
 
         var status = string.Join(", ", subscriptions.Select(x =>
-            $"{x.FeedType.ToCommandValue()} ({BuildFilterSummary(x.FeedType, x.Rulesets, x.EventTypes, x.GroupId)})"));
+            $"{x.FeedType.ToCommandValue()} ({FeedSubscriptionOperations.BuildFilterSummary(x.FeedType, x.Rulesets, x.EventTypes, x.GroupId)})"));
 
         return $"Enabled feeds: {status}";
-    }
-
-    private static string BuildFilterSummary(
-        FeedType feedType,
-        string? serializedRulesets,
-        string? serializedEventTypes,
-        long? groupId)
-    {
-        return feedType switch
-        {
-            FeedType.Map =>
-                $"rulesets: {FeedEnumExtensions.FormatRulesetsForDisplay(serializedRulesets)}, event types: {FeedEnumExtensions.FormatEventTypesForDisplay(serializedEventTypes)}",
-            FeedType.Group =>
-                $"group id: {(groupId is null ? "all" : groupId.Value.ToString())}",
-            _ => "default",
-        };
     }
 }

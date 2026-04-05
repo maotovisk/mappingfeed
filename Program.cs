@@ -8,8 +8,8 @@ using Microsoft.Extensions.Options;
 using NetCord.Hosting.Gateway;
 using NetCord.Hosting.Services.ApplicationCommands;
 using NetCord.Gateway;
-using NetCord.Hosting.Services;
 using NetCord.Services.ApplicationCommands;
+using NetCord.Hosting.Services.ComponentInteractions;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -51,6 +51,7 @@ builder.Services.AddDiscordGateway((options, serviceProvider) =>
 });
 
 builder.Services.AddApplicationCommands();
+builder.Services.AddComponentInteractions();
 
 var localAppDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 if (string.IsNullOrWhiteSpace(localAppDataPath))
@@ -67,8 +68,11 @@ builder.Services.AddDbContextFactory<MappingFeedDbContext>(options =>
 
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<FeedEmbedFactory>();
+builder.Services.AddSingleton<FeedSetupSessionStore>();
 builder.Services.AddSingleton<FeedTypeAutocompleteProvider>();
-builder.Services.AddSingleton<SubscribeAdditionalFiltersAutocompleteProvider>();
+builder.Services.AddSingleton<SubscribeGroupIdAutocompleteProvider>();
+builder.Services.AddSingleton<SubscribeEventTypeAutocompleteProvider>();
+builder.Services.AddSingleton<SubscribeRulesetAutocompleteProvider>();
 
 builder.Services.AddHttpClient<OsuAuthClient>((serviceProvider, client) =>
 {
@@ -97,5 +101,6 @@ await using (var scope = host.Services.CreateAsyncScope())
 host.Services
     .GetRequiredService<IApplicationCommandService>()
     .AddModule<FeedCommandModule>();
+host.AddComponentInteractionModule<FeedSetupComponentModule>();
 
 await host.RunAsync();

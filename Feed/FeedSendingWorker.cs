@@ -358,6 +358,7 @@ public sealed class FeedSendingWorker(
             .OrderBy(x => x.EventId)
             .Take(GetDispatchBatchSize())
             .ToListAsync(cancellationToken);
+        var allowedGroupIds = FeedEnumExtensions.DeserializeGroupIds(subscription.GroupId);
 
         foreach (var pendingEvent in pendingEvents)
         {
@@ -368,7 +369,7 @@ public sealed class FeedSendingWorker(
                 continue;
             }
 
-            if (subscription.GroupId is not null && pendingEvent.GroupId != subscription.GroupId.Value)
+            if (allowedGroupIds is not null && !allowedGroupIds.Contains(pendingEvent.GroupId))
             {
                 subscription.LastEventId = pendingEvent.EventId;
                 await db.SaveChangesAsync(cancellationToken);
