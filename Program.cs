@@ -67,6 +67,8 @@ builder.Services.AddDbContextFactory<MappingFeedDbContext>(options =>
 
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<FeedEmbedFactory>();
+builder.Services.AddSingleton<FeedTypeAutocompleteProvider>();
+builder.Services.AddSingleton<SubscribeAdditionalFiltersAutocompleteProvider>();
 
 builder.Services.AddHttpClient<OsuAuthClient>((serviceProvider, client) =>
 {

@@ -11,11 +11,21 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
 {
     [SlashCommand("subscribe-feed", "Subscribe the current channel to a feed type.")]
     public async Task<string> SubscribeFeedAsync(
-        [SlashCommandParameter(Description = "map/group with optional filters: ruleset:osu, event_type:rank, group_id:28")]
-        string type)
+        [SlashCommandParameter(
+            Description = "map/group",
+            AutocompleteProviderType = typeof(FeedTypeAutocompleteProvider))]
+        string type,
+        [SlashCommandParameter(
+            Description = "Optional filters: ruleset:osu, event_type:rank, group_id:28",
+            AutocompleteProviderType = typeof(SubscribeAdditionalFiltersAutocompleteProvider))]
+        string? additionalFilters = null)
     {
+        var subscribeInput = string.IsNullOrWhiteSpace(additionalFilters)
+            ? type
+            : $"{type} {additionalFilters}";
+
         if (!FeedEnumExtensions.TryParseSubscribeArgument(
-                type,
+                subscribeInput,
                 out var feedType,
                 out var rulesets,
                 out var eventTypes,
@@ -65,7 +75,9 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
 
     [SlashCommand("unsubscribe-feed", "Unsubscribe the current channel from a feed type (supports optional ruleset argument syntax).")]
     public async Task<string> UnsubscribeFeedAsync(
-        [SlashCommandParameter(Description = "map/group (ruleset:... is accepted but ignored for matching)")]
+        [SlashCommandParameter(
+            Description = "map/group (ruleset:... is accepted but ignored for matching)",
+            AutocompleteProviderType = typeof(FeedTypeAutocompleteProvider))]
         string type)
     {
         if (!FeedEnumExtensions.TryParseFeedTypeArgument(type, out var feedType))
