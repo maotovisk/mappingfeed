@@ -17,6 +17,15 @@ public sealed class OsuApiClient(
 {
     private const string BeatmapsetEventsPath = "/api/v2/beatmapsets/events";
     private const string GroupHistoryPath = "/groups/history";
+    private static readonly IReadOnlyList<string> UsedBeatmapsetEventTypes =
+    [
+        "nominate",
+        "nomination_reset",
+        "qualify",
+        "disqualify",
+        "rank",
+        "unrank",
+    ];
 
     private readonly string _baseUrl = osuOptions.Value.BaseUrl.TrimEnd('/');
     private readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(Math.Clamp(feedOptions.Value.ApiCacheMinutes, 5, 20));
@@ -28,6 +37,7 @@ public sealed class OsuApiClient(
             new("sort", "id_desc"),
             new("limit", limit.ToString()),
         };
+        AddUsedBeatmapsetEventTypeFilters(query);
 
         var root = await GetRootAsync(BeatmapsetEventsPath, query, cancellationToken);
         var payload = OsuBeatmapsetEventsParser.Parse(root);
@@ -151,8 +161,11 @@ public sealed class OsuApiClient(
         if (string.IsNullOrWhiteSpace(message) && discussionId is not null)
             message = await TryGetDiscussionMessageAsync(discussionId.Value, cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(message))
+        if (string.IsNullOrWhiteSpace(message) &&
+            (discussionPostId is not null || discussionId is not null))
+        {
             message = await TrySearchDiscussionMessageAsync(setId, discussionPostId, discussionId, cancellationToken);
+        }
 
         if (!string.IsNullOrWhiteSpace(message))
             memoryCache.Set(cacheKey, message, _cacheDuration);
@@ -185,6 +198,7 @@ public sealed class OsuApiClient(
             .OfType<JsonObject>()
             .Where(x => x.TryGetInt64("user_id") == userId)
             .Where(x => IsPraiseOrHype(x.TryGetString("message_type")))
+            .Where(IsGeneralDiscussion)
             .Select(x => new
             {
                 Discussion = x,
@@ -312,6 +326,7 @@ public sealed class OsuApiClient(
                 new("limit", pageSize.ToString()),
                 new("beatmapset_id", setId.ToString()),
             };
+            AddUsedBeatmapsetEventTypeFilters(query);
 
             if (!string.IsNullOrWhiteSpace(cursorString))
                 query.Add(new KeyValuePair<string, string?>("cursor_string", cursorString));
@@ -417,10 +432,6 @@ public sealed class OsuApiClient(
         JsonObject? matchedDiscussion = null;
         if (discussionId is not null)
             matchedDiscussion = FindObjectById(root, discussionId.Value, "discussions", "beatmapset_discussions", "included_discussions");
-
-        matchedDiscussion ??= (root.TryGetArray("discussions", "beatmapset_discussions", "included_discussions") ?? [])
-            .OfType<JsonObject>()
-            .FirstOrDefault();
 
         if (matchedDiscussion is null)
             return null;
@@ -543,6 +554,16 @@ public sealed class OsuApiClient(
             "hype" => true,
             _ => false,
         };
+    }
+
+    private static bool IsGeneralDiscussion(JsonObject discussion)
+    {
+        var beatmapId = discussion.TryGetInt64("beatmap_id");
+        if (beatmapId is not null && beatmapId.Value > 0)
+            return false;
+
+        var beatmapObject = discussion["beatmap"] as JsonObject;
+        return beatmapObject?.TryGetInt64("id") is null;
     }
 
     private static bool IsUsefulDiscussionMessageType(string? messageType)
@@ -742,6 +763,12 @@ public sealed class OsuApiClient(
             return trimmed;
 
         return trimmed[..maxLength] + "...";
+    }
+
+    private static void AddUsedBeatmapsetEventTypeFilters(ICollection<KeyValuePair<string, string?>> query)
+    {
+        foreach (var eventType in UsedBeatmapsetEventTypes)
+            query.Add(new KeyValuePair<string, string?>("types[]", eventType));
     }
 }
 

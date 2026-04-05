@@ -61,9 +61,6 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<FeedEmbedFactory>();
 builder.Services.AddSingleton<FeedSetupSessionStore>();
 builder.Services.AddSingleton<FeedTypeAutocompleteProvider>();
-builder.Services.AddSingleton<SubscribeGroupIdAutocompleteProvider>();
-builder.Services.AddSingleton<SubscribeEventTypeAutocompleteProvider>();
-builder.Services.AddSingleton<SubscribeRulesetAutocompleteProvider>();
 
 builder.Services.AddHttpClient<OsuAuthClient>((serviceProvider, client) =>
 {

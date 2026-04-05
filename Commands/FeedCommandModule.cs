@@ -12,57 +12,6 @@ public sealed class FeedCommandModule(
     FeedSetupSessionStore setupSessionStore)
     : ApplicationCommandModule<ApplicationCommandContext>
 {
-    [SlashCommand("subscribe-feed", "Subscribe the current channel to a feed type.")]
-    public async Task<string> SubscribeFeedAsync(
-        [SlashCommandParameter(
-            Description = "map/group",
-            AutocompleteProviderType = typeof(FeedTypeAutocompleteProvider))]
-        string type,
-        [SlashCommandParameter(
-            Description = "Optional map rulesets (e.g. osu or osu,mania)",
-            AutocompleteProviderType = typeof(SubscribeRulesetAutocompleteProvider))]
-        string? ruleset = null,
-        [SlashCommandParameter(
-            Description = "Optional map event types (e.g. rank or rank,qualify)",
-            AutocompleteProviderType = typeof(SubscribeEventTypeAutocompleteProvider))]
-        string? eventType = null,
-        [SlashCommandParameter(
-            Description = "Optional group ids (e.g. 28 or 28,32)",
-            AutocompleteProviderType = typeof(SubscribeGroupIdAutocompleteProvider))]
-        string? groupId = null)
-    {
-        var subscribeParts = new List<string> { type };
-        if (!string.IsNullOrWhiteSpace(ruleset))
-            subscribeParts.Add($"ruleset:{ruleset}");
-        if (!string.IsNullOrWhiteSpace(eventType))
-            subscribeParts.Add($"event_type:{eventType}");
-        if (!string.IsNullOrWhiteSpace(groupId))
-            subscribeParts.Add($"group_id:{groupId}");
-
-        var subscribeInput = string.Join(' ', subscribeParts);
-
-        if (!FeedEnumExtensions.TryParseSubscribeArgument(
-                subscribeInput,
-                out var feedType,
-                out var rulesets,
-                out var eventTypes,
-                out var parsedGroupIds,
-                out var parseError))
-            return parseError ?? "Invalid argument.";
-
-        if (Context.Interaction.GuildId is null)
-            return "This command only works in server channels.";
-
-        var channelId = checked((long)Context.Channel.Id);
-        return await FeedSubscriptionOperations.UpsertSubscriptionAsync(
-            dbContextFactory,
-            channelId,
-            feedType,
-            rulesets,
-            eventTypes,
-            parsedGroupIds);
-    }
-
     [SlashCommand("setup-feed", "Interactive setup form for the current channel feed subscription.")]
     public InteractionMessageProperties SetupFeedAsync()
     {

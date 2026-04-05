@@ -388,9 +388,8 @@ public sealed class FeedSetupComponentModule(
             return;
         }
 
-        var subscribeInput = BuildSubscribeInput(session);
-        if (!FeedEnumExtensions.TryParseSubscribeArgument(
-                subscribeInput,
+        if (!TryBuildSubscriptionFilters(
+                session,
                 out var feedType,
                 out var rulesets,
                 out var eventTypes,
@@ -455,28 +454,71 @@ public sealed class FeedSetupComponentModule(
                 .WithComponents(Array.Empty<IMessageComponentProperties>())));
     }
 
-    private static string BuildSubscribeInput(FeedSetupSession session)
+    private static bool TryBuildSubscriptionFilters(
+        FeedSetupSession session,
+        out FeedType feedType,
+        out HashSet<Ruleset>? rulesets,
+        out HashSet<FeedEventType>? eventTypes,
+        out HashSet<long>? groupIds,
+        out string? error)
     {
-        var parts = new List<string> { session.FeedType.ToCommandValue() };
+        feedType = session.FeedType;
+        rulesets = null;
+        eventTypes = null;
+        groupIds = null;
+        error = null;
 
-        if (session.FeedType == FeedType.Map)
+        if (feedType == FeedType.Map)
         {
-            var orderedRulesets = FeedSetupUi.OrderRulesets(session.Rulesets).ToList();
-            if (orderedRulesets.Count > 0)
-                parts.Add($"ruleset:{string.Join(",", orderedRulesets)}");
+            var parsedRulesets = new HashSet<Ruleset>();
+            foreach (var selectedRuleset in FeedSetupUi.OrderRulesets(session.Rulesets))
+            {
+                if (!FeedEnumExtensions.TryParseRuleset(selectedRuleset, out var parsedRuleset))
+                {
+                    error = $"Invalid ruleset `{selectedRuleset}`.";
+                    return false;
+                }
 
-            var orderedEventTypes = FeedSetupUi.OrderEventTypes(session.EventTypes).ToList();
-            if (orderedEventTypes.Count > 0)
-                parts.Add($"event_type:{string.Join(",", orderedEventTypes)}");
+                parsedRulesets.Add(parsedRuleset);
+            }
+
+            if (parsedRulesets.Count > 0)
+                rulesets = parsedRulesets;
+
+            var parsedEventTypes = new HashSet<FeedEventType>();
+            foreach (var selectedEventType in FeedSetupUi.OrderEventTypes(session.EventTypes))
+            {
+                if (!FeedEnumExtensions.TryParseMapEventType(selectedEventType, out var parsedEventType))
+                {
+                    error = $"Invalid event type `{selectedEventType}`.";
+                    return false;
+                }
+
+                parsedEventTypes.Add(parsedEventType);
+            }
+
+            if (parsedEventTypes.Count > 0)
+                eventTypes = parsedEventTypes;
         }
         else
         {
-            var orderedGroups = FeedSetupUi.OrderGroupIds(session.GroupIds).ToList();
-            if (orderedGroups.Count > 0)
-                parts.Add($"group_id:{string.Join(",", orderedGroups)}");
+            var parsedGroupIds = new HashSet<long>();
+            foreach (var selectedGroupId in FeedSetupUi.OrderGroupIds(session.GroupIds))
+            {
+                if (!long.TryParse(selectedGroupId, out var parsedGroupId) || parsedGroupId <= 0)
+                {
+                    error = $"Invalid group id `{selectedGroupId}`.";
+                    return false;
+                }
+
+                parsedGroupIds.Add(parsedGroupId);
+            }
+
+            if (parsedGroupIds.Count > 0)
+                groupIds = parsedGroupIds;
         }
 
-        return string.Join(' ', parts);
+        return true;
     }
 }
 

@@ -632,9 +632,7 @@ public sealed class FeedEmbedFactory(
 
     private static bool ShouldUseMessageFailsafe(FeedEventType eventType)
     {
-        return eventType is FeedEventType.Nomination
-            or FeedEventType.Qualification
-            or FeedEventType.Disqualification;
+        return eventType is FeedEventType.Disqualification;
     }
 
     private static long? TryGetMapperUserId(string rawEvent)

@@ -40,6 +40,7 @@ public sealed class FeedFetchingWorker(
 
     private async Task FetchBeatmapsetEventsAsync(CancellationToken cancellationToken)
     {
+        logger.LogInformation("Fetching beatmapset events.");
         var payload = await osuApiClient.GetBeatmapsetEventsAsync(_options.EventsBatchSize, cancellationToken);
 
         var parsedEvents = payload.Events
@@ -74,10 +75,12 @@ public sealed class FeedFetchingWorker(
 
         db.BeatmapsetEvents.AddRange(newEvents);
         await db.SaveChangesAsync(cancellationToken);
+        logger.LogInformation("Fetched {Count} beatmapset events.", newEvents.Count);
     }
 
     private async Task FetchGroupEventsAsync(CancellationToken cancellationToken)
     {
+        logger.LogInformation("Fetching group events.");
         var payloads = await osuApiClient.GetGroupHistoryEventsAsync(_options.EventsBatchSize, cancellationToken);
 
         var parsedEvents = payloads
@@ -109,6 +112,8 @@ public sealed class FeedFetchingWorker(
 
         db.GroupEvents.AddRange(newEvents);
         await db.SaveChangesAsync(cancellationToken);
+        
+        logger.LogInformation("Fetched {Count} group events.", newEvents.Count);
     }
 
     private async Task EnrichMapMessagesAsync(
@@ -142,10 +147,8 @@ public sealed class FeedFetchingWorker(
 
                 if (!string.IsNullOrWhiteSpace(praiseOrHypeMessage))
                     parsedEvent.Message = praiseOrHypeMessage;
-            }
-
-            if (!string.IsNullOrWhiteSpace(parsedEvent.Message))
                 continue;
+            }
 
             var discussionMessage = await osuApiClient.GetLatestDiscussionMessageByUserAsync(
                 parsedEvent.SetId,

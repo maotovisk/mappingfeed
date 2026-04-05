@@ -118,7 +118,7 @@ public sealed class FeedSendingWorker(
             var rawEventForRuleset = pendingEvent.RawEvent;
             if (pendingEvent.EventType == FeedEventType.Qualification &&
                 hasMergedNomination &&
-                TryExtractRuleset(rawEventForRuleset) is null)
+                TryExtractRulesets(rawEventForRuleset).Count == 0)
             {
                 rawEventForRuleset = mergedNomination!.RawEvent;
             }
@@ -176,9 +176,9 @@ public sealed class FeedSendingWorker(
         if (allowedRulesets is null || allowedRulesets.Count == 0)
             return true;
 
-        var eventRuleset = TryExtractRuleset(rawEvent);
-        if (eventRuleset is not null)
-            return allowedRulesets.Contains(eventRuleset.Value);
+        var eventRulesets = TryExtractRulesets(rawEvent);
+        if (eventRulesets.Count > 0)
+            return eventRulesets.Overlaps(allowedRulesets);
 
         if (!ShouldUseRulesetFailsafe(pendingEvent.EventType))
             return false;
@@ -274,42 +274,52 @@ public sealed class FeedSendingWorker(
         return new MapMergePlan(nominationEventIdsToSuppress, nominationForQualification);
     }
 
-    private static Ruleset? TryExtractRuleset(string rawEvent)
+    private static HashSet<Ruleset> TryExtractRulesets(string rawEvent)
     {
+        var rulesets = new HashSet<Ruleset>();
+
         try
         {
             var root = JsonNode.Parse(rawEvent) as JsonObject;
-            if (TryExtractRulesetFromCommentModes(root) is { } modeFromComment)
-                return modeFromComment;
+            AddRulesetsFromCommentModes(root, rulesets);
 
             var mode = root?.TryGetNestedString("beatmap", "mode")
                 ?? root?.TryGetString("mode");
 
             if (FeedEnumExtensions.TryParseRuleset(mode, out var ruleset))
-                return ruleset;
+                rulesets.Add(ruleset);
 
             var modeInt = root?.TryGetNestedInt64("beatmap", "mode_int")
                 ?? root?.TryGetInt64("mode_int", "ruleset_id");
 
-            return modeInt switch
+            switch (modeInt)
             {
-                0 => Ruleset.Osu,
-                1 => Ruleset.Taiko,
-                2 => Ruleset.Catch,
-                3 => Ruleset.Mania,
-                _ => null,
-            };
+                case 0:
+                    rulesets.Add(Ruleset.Osu);
+                    break;
+                case 1:
+                    rulesets.Add(Ruleset.Taiko);
+                    break;
+                case 2:
+                    rulesets.Add(Ruleset.Catch);
+                    break;
+                case 3:
+                    rulesets.Add(Ruleset.Mania);
+                    break;
+            }
         }
         catch
         {
-            return null;
+            // Ignore malformed payload.
         }
+
+        return rulesets;
     }
 
-    private static Ruleset? TryExtractRulesetFromCommentModes(JsonObject? root)
+    private static void AddRulesetsFromCommentModes(JsonObject? root, ISet<Ruleset> destination)
     {
         if (root?["comment"]?["modes"] is not JsonArray modes)
-            return null;
+            return;
 
         foreach (var mode in modes)
         {
@@ -318,10 +328,8 @@ public sealed class FeedSendingWorker(
 
             var modeValue = mode.ToString();
             if (FeedEnumExtensions.TryParseRuleset(modeValue, out var parsed))
-                return parsed;
+                destination.Add(parsed);
         }
-
-        return null;
     }
 
     private static DateTimeOffset? TryGetCreatedAt(string rawEvent)
