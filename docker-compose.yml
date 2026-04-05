@@ -21,7 +21,4 @@ services:
       "Logging__LogLevel__Microsoft.Hosting.Lifetime": ${LOG_LEVEL_HOSTING_LIFETIME:-Information}
       "Logging__LogLevel__System.Net.Http": ${LOG_LEVEL_SYSTEM_NET_HTTP:-Warning}
     volumes:
-      - mappingfeed_data:/root/.local/share/mappingfeed
-
-volumes:
-  mappingfeed_data:
+      - ${HOME}/.local/share/mappingfeed:/root/.local/share/mappingfeed
