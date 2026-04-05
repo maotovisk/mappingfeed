@@ -259,11 +259,11 @@ public sealed class FeedFetchingWorker(
         return rawType.Trim().ToLowerInvariant() switch
         {
             "nominate" => FeedEventType.Nomination,
-            "nomination_reset" or "nomination_reset_received" => FeedEventType.NominationReset,
+            "nomination_reset" => FeedEventType.NominationReset,
             "qualify" => FeedEventType.Qualification,
             "disqualify" => FeedEventType.Disqualification,
             "rank" => FeedEventType.Ranked,
-            "unrank" or "unranked" => FeedEventType.Unranked,
+            "unrank" => FeedEventType.Unranked,
             _ => null,
         };
     }

@@ -1,0 +1,14 @@
+.git
+.idea
+bin
+obj
+artifacts
+publish
+TestResults
+.env
+.env.*
+*.user
+*.suo
+*.swp
+*.tmp
+*.cache

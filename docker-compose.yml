@@ -1,0 +1,27 @@
+services:
+  mappingfeed-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mappingfeed-bot
+    restart: unless-stopped
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      Discord__Token: ${DISCORD_TOKEN:?DISCORD_TOKEN is required}
+      Osu__BaseUrl: ${OSU_BASE_URL:-https://osu.ppy.sh}
+      Osu__ClientId: ${OSU_CLIENT_ID:?OSU_CLIENT_ID is required}
+      Osu__ClientSecret: ${OSU_CLIENT_SECRET:?OSU_CLIENT_SECRET is required}
+      Feed__PollIntervalSeconds: ${FEED_POLL_INTERVAL_SECONDS:-30}
+      Feed__DispatchIntervalSeconds: ${FEED_DISPATCH_INTERVAL_SECONDS:-120}
+      Feed__EventsBatchSize: ${FEED_EVENTS_BATCH_SIZE:-25}
+      Feed__DispatchBatchSize: ${FEED_DISPATCH_BATCH_SIZE:-10}
+      Feed__ApiCacheMinutes: ${FEED_API_CACHE_MINUTES:-10}
+      Logging__LogLevel__Default: ${LOG_LEVEL_DEFAULT:-Information}
+      Logging__LogLevel__Microsoft: ${LOG_LEVEL_MICROSOFT:-Warning}
+      "Logging__LogLevel__Microsoft.Hosting.Lifetime": ${LOG_LEVEL_HOSTING_LIFETIME:-Information}
+      "Logging__LogLevel__System.Net.Http": ${LOG_LEVEL_SYSTEM_NET_HTTP:-Warning}
+    volumes:
+      - mappingfeed_data:/root/.local/share/mappingfeed
+
+volumes:
+  mappingfeed_data:

@@ -61,7 +61,7 @@ public sealed class FeedEmbedFactory(
 
         var valueLines = new List<string>
         {
-            $"[{mapTitle}]({beatmapsetUrl})",
+            $"**[{mapTitle}]({beatmapsetUrl})**",
             $"Mapped by {mapperLink} **{modeTags}**",
         };
 
@@ -80,10 +80,7 @@ public sealed class FeedEmbedFactory(
                     .WithValue(string.Join('\n', valueLines))
             ]);
 
-        if (!string.IsNullOrWhiteSpace(beatmapset?.ThumbnailUrl))
-        {
-            embed.WithThumbnail(new EmbedThumbnailProperties(beatmapset!.ThumbnailUrl!));
-        }
+        embed.WithThumbnail(new EmbedThumbnailProperties(BuildBeatmapsetThumbnailUrl(beatmapsetEvent.SetId)));
 
         if (!string.IsNullOrWhiteSpace(footerText))
         {
@@ -496,11 +493,16 @@ public sealed class FeedEmbedFactory(
         return rawType.Trim().ToLowerInvariant() switch
         {
             "nominate" => FeedEventType.Nomination,
-            "nomination_reset" or "nomination_reset_received" => FeedEventType.NominationReset,
+            "nomination_reset" => FeedEventType.NominationReset,
             "qualify" => FeedEventType.Qualification,
             "disqualify" => FeedEventType.Disqualification,
             _ => null,
         };
+    }
+
+    private static string BuildBeatmapsetThumbnailUrl(long setId)
+    {
+        return $"https://b.ppy.sh/thumb/{setId}l.jpg";
     }
 
     private static long? ResolveHistoryUserId(

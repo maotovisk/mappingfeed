@@ -82,6 +82,8 @@ _ReSharper*/
 # =========================
 .env
 .env.*
+!.env.example
+.codex
 appsettings.Development.json
 appsettings.Production.json
 secrets.json
