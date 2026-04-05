@@ -16,20 +16,34 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
             AutocompleteProviderType = typeof(FeedTypeAutocompleteProvider))]
         string type,
         [SlashCommandParameter(
-            Description = "Optional filters: ruleset:osu, event_type:rank, group_id:28",
-            AutocompleteProviderType = typeof(SubscribeAdditionalFiltersAutocompleteProvider))]
-        string? additionalFilters = null)
+            Description = "Optional map rulesets (e.g. osu or osu,mania)",
+            AutocompleteProviderType = typeof(SubscribeRulesetAutocompleteProvider))]
+        string? ruleset = null,
+        [SlashCommandParameter(
+            Description = "Optional map event types (e.g. rank or rank,qualify)",
+            AutocompleteProviderType = typeof(SubscribeEventTypeAutocompleteProvider))]
+        string? eventType = null,
+        [SlashCommandParameter(
+            Description = "Optional group id (e.g. 28)",
+            AutocompleteProviderType = typeof(SubscribeGroupIdAutocompleteProvider))]
+        string? groupId = null)
     {
-        var subscribeInput = string.IsNullOrWhiteSpace(additionalFilters)
-            ? type
-            : $"{type} {additionalFilters}";
+        var subscribeParts = new List<string> { type };
+        if (!string.IsNullOrWhiteSpace(ruleset))
+            subscribeParts.Add($"ruleset:{ruleset}");
+        if (!string.IsNullOrWhiteSpace(eventType))
+            subscribeParts.Add($"event_type:{eventType}");
+        if (!string.IsNullOrWhiteSpace(groupId))
+            subscribeParts.Add($"group_id:{groupId}");
+
+        var subscribeInput = string.Join(' ', subscribeParts);
 
         if (!FeedEnumExtensions.TryParseSubscribeArgument(
                 subscribeInput,
                 out var feedType,
                 out var rulesets,
                 out var eventTypes,
-                out var groupId,
+                out var parsedGroupId,
                 out var parseError))
             return parseError ?? "Invalid argument.";
 
@@ -49,14 +63,14 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
         {
             if (string.Equals(existingSubscription.Rulesets, serializedRulesets, StringComparison.Ordinal) &&
                 string.Equals(existingSubscription.EventTypes, serializedEventTypes, StringComparison.Ordinal) &&
-                existingSubscription.GroupId == groupId)
+                existingSubscription.GroupId == parsedGroupId)
                 return $"This channel is already subscribed to `{feedType.ToCommandValue()}` ({BuildFilterSummary(feedType, existingSubscription.Rulesets, existingSubscription.EventTypes, existingSubscription.GroupId)}).";
 
             existingSubscription.Rulesets = serializedRulesets;
             existingSubscription.EventTypes = serializedEventTypes;
-            existingSubscription.GroupId = groupId;
+            existingSubscription.GroupId = parsedGroupId;
             await db.SaveChangesAsync();
-            return $"Updated `{feedType.ToCommandValue()}` subscription ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, groupId)}).";
+            return $"Updated `{feedType.ToCommandValue()}` subscription ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, parsedGroupId)}).";
         }
 
         db.SubscribedChannels.Add(new SubscribedChannel
@@ -66,11 +80,11 @@ public sealed class FeedCommandModule(IDbContextFactory<MappingFeedDbContext> db
             LastEventId = 0,
             Rulesets = serializedRulesets,
             EventTypes = serializedEventTypes,
-            GroupId = groupId,
+            GroupId = parsedGroupId,
         });
 
         await db.SaveChangesAsync();
-        return $"Subscribed this channel to `{feedType.ToCommandValue()}` ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, groupId)}).";
+        return $"Subscribed this channel to `{feedType.ToCommandValue()}` ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, parsedGroupId)}).";
     }
 
     [SlashCommand("unsubscribe-feed", "Unsubscribe the current channel from a feed type (supports optional ruleset argument syntax).")]
