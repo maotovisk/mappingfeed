@@ -601,7 +601,8 @@ public static class DatabaseSchemaUpdater
                 x.TriggeredBy != null &&
                 (x.ActorUsername == null || x.ActorUsername == "" ||
                  x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
-                 x.ActorBadge == null || x.ActorBadge == ""))
+                 x.ActorBadge == null || x.ActorBadge == "" ||
+                 x.ActorBadge == "PROBATION"))
             .Select(x => x.TriggeredBy!.Value)
             .Distinct()
             .OrderBy(x => x)
@@ -641,7 +642,8 @@ public static class DatabaseSchemaUpdater
                     x.TriggeredBy == userId &&
                     (x.ActorUsername == null || x.ActorUsername == "" ||
                      x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
-                     x.ActorBadge == null || x.ActorBadge == ""))
+                     x.ActorBadge == null || x.ActorBadge == "" ||
+                     x.ActorBadge == "PROBATION"))
                 .ToListAsync(cancellationToken);
 
             var changed = false;
@@ -788,7 +790,8 @@ public static class DatabaseSchemaUpdater
             .Where(x =>
                 x.UserName == null || x.UserName == "" ||
                 x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
-                x.ActorBadge == null || x.ActorBadge == "")
+                x.ActorBadge == null || x.ActorBadge == "" ||
+                x.ActorBadge == "PROBATION")
             .Select(x => x.UserId)
             .Distinct()
             .OrderBy(x => x)
@@ -828,7 +831,8 @@ public static class DatabaseSchemaUpdater
                     x.UserId == userId &&
                     (x.UserName == null || x.UserName == "" ||
                      x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
-                     x.ActorBadge == null || x.ActorBadge == ""))
+                     x.ActorBadge == null || x.ActorBadge == "" ||
+                     x.ActorBadge == "PROBATION"))
                 .ToListAsync(cancellationToken);
 
             var changed = false;

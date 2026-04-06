@@ -28,6 +28,25 @@ public sealed class OsuApiClient(
         "unrank",
     ];
     private static readonly IReadOnlyList<string> EmptyModes = Array.Empty<string>();
+    private static readonly IReadOnlyDictionary<long, (string? Badge, int Priority)> SupportedUserGroupBadges =
+        new Dictionary<long, (string? Badge, int Priority)>
+        {
+            [4] = ("GMT", 10),
+            [7] = ("NAT", 20),
+            [11] = ("DEV", 30),
+            [16] = ("ALM", 40),
+            [22] = ("SPT", 50),
+            [26] = (null, 60),
+            [28] = ("BN", 70),
+            [29] = ("BOT", 80),
+            [31] = ("LVD", 90),
+            [32] = ("BN", 100),
+            [33] = ("PPY", 110),
+            [35] = ("FA", 120),
+            [47] = (null, 130),
+            [48] = ("BSC", 140),
+            [50] = ("TC", 150),
+        };
     private static readonly TimeSpan MinRequestInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan DefaultTooManyRequestsDelay = TimeSpan.FromSeconds(10);
     private const int MaxTooManyRequestsRetries = 2;
@@ -791,19 +810,45 @@ public sealed class OsuApiClient(
 
     private static string? ResolveUserBadge(JsonObject root)
     {
+        string? mappedBadge = null;
+        var mappedPriority = int.MaxValue;
+        string? fallbackShortName = null;
+
         if (root.TryGetArray("groups") is { } groups)
         {
             foreach (var group in groups.OfType<JsonObject>())
             {
-                var identifier = group.TryGetString("identifier");
-                if (string.Equals(identifier, "bng_limited", StringComparison.OrdinalIgnoreCase))
-                    return "PROBATION";
-
                 var shortName = group.TryGetString("short_name");
-                if (!string.IsNullOrWhiteSpace(shortName))
-                    return shortName;
+                if (string.IsNullOrWhiteSpace(fallbackShortName) &&
+                    !string.IsNullOrWhiteSpace(shortName))
+                {
+                    fallbackShortName = shortName.Trim().ToUpperInvariant();
+                }
+
+                var groupId = group.TryGetInt64("id");
+                if (groupId is null)
+                    continue;
+
+                if (!SupportedUserGroupBadges.TryGetValue(groupId.Value, out var supported))
+                    continue;
+
+                var (badge, priority) = supported;
+                if (string.IsNullOrWhiteSpace(badge))
+                    continue;
+
+                if (priority >= mappedPriority)
+                    continue;
+
+                mappedBadge = badge;
+                mappedPriority = priority;
             }
         }
+
+        if (!string.IsNullOrWhiteSpace(mappedBadge))
+            return mappedBadge;
+
+        if (!string.IsNullOrWhiteSpace(fallbackShortName))
+            return fallbackShortName;
 
         var defaultGroup = root.TryGetString("default_group");
         if (string.IsNullOrWhiteSpace(defaultGroup) || defaultGroup.Equals("default", StringComparison.OrdinalIgnoreCase))

@@ -13,6 +13,11 @@ WORKDIR /app
 COPY --from=build /app/publish ./
 
 ENV DOTNET_ENVIRONMENT=Production
+ENV Feed__EnableApiBackfillWorker=true
+ENV Feed__ApiBackfillStartupDelaySeconds=20
+ENV Feed__ApiBackfillRepeatIntervalMinutes=0
+ENV Feed__ApiBackfillThrottleMilliseconds=1000
+ENV Feed__ApiBackfillBatchSize=128
 
 # SQLite database is stored under LocalApplicationData (/root/.local/share/mappingfeed in this image).
 RUN mkdir -p /root/.local/share/mappingfeed

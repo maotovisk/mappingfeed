@@ -17,6 +17,11 @@ services:
       Feed__EventsBatchSize: ${FEED_EVENTS_BATCH_SIZE:-25}
       Feed__DispatchBatchSize: ${FEED_DISPATCH_BATCH_SIZE:-10}
       Feed__ApiCacheMinutes: ${FEED_API_CACHE_MINUTES:-10}
+      Feed__EnableApiBackfillWorker: ${FEED_ENABLE_API_BACKFILL_WORKER:-true}
+      Feed__ApiBackfillStartupDelaySeconds: ${FEED_API_BACKFILL_STARTUP_DELAY_SECONDS:-20}
+      Feed__ApiBackfillRepeatIntervalMinutes: ${FEED_API_BACKFILL_REPEAT_INTERVAL_MINUTES:-0}
+      Feed__ApiBackfillThrottleMilliseconds: ${FEED_API_BACKFILL_THROTTLE_MILLISECONDS:-1000}
+      Feed__ApiBackfillBatchSize: ${FEED_API_BACKFILL_BATCH_SIZE:-128}
       Logging__LogLevel__Default: ${LOG_LEVEL_DEFAULT:-Information}
       Logging__LogLevel__Microsoft: ${LOG_LEVEL_MICROSOFT:-Warning}
       "Logging__LogLevel__Microsoft.Hosting.Lifetime": ${LOG_LEVEL_HOSTING_LIFETIME:-Information}
