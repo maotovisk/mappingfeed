@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Globalization;
 using MappingFeed.Config;
 using MappingFeed.Data;
 using MappingFeed.Data.Entities;
@@ -58,13 +59,11 @@ public sealed class FeedFetchingWorker(
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToList();
-        var existingEventIds = await db.BeatmapsetEvents
+        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToHashSet();
+        var existingIdSet = await db.BeatmapsetEvents
             .Where(x => incomingEventIds.Contains(x.EventId))
             .Select(x => x.EventId)
-            .ToListAsync(cancellationToken);
-
-        var existingIdSet = existingEventIds.ToHashSet();
+            .ToHashSetAsync(cancellationToken);
 
         var newEvents = parsedEvents
             .Where(x => !existingIdSet.Contains(x.EventId))
@@ -95,13 +94,11 @@ public sealed class FeedFetchingWorker(
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToList();
-        var existingEventIds = await db.GroupEvents
+        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToHashSet();
+        var existingIdSet = await db.GroupEvents
             .Where(x => incomingEventIds.Contains(x.EventId))
             .Select(x => x.EventId)
-            .ToListAsync(cancellationToken);
-
-        var existingIdSet = existingEventIds.ToHashSet();
+            .ToHashSetAsync(cancellationToken);
 
         var newEvents = parsedEvents
             .Where(x => !existingIdSet.Contains(x.EventId))
@@ -112,7 +109,7 @@ public sealed class FeedFetchingWorker(
 
         db.GroupEvents.AddRange(newEvents);
         await db.SaveChangesAsync(cancellationToken);
-        
+
         logger.LogInformation("Fetched {Count} group events.", newEvents.Count);
     }
 
@@ -125,9 +122,10 @@ public sealed class FeedFetchingWorker(
 
         foreach (var parsedEvent in parsedEvents)
         {
-            if ((parsedEvent.EventType != FeedEventType.Nomination &&
-                 parsedEvent.EventType != FeedEventType.Qualification &&
-                 parsedEvent.EventType != FeedEventType.Disqualification) ||
+            if (parsedEvent.EventType is not (
+                    FeedEventType.Nomination
+                    or FeedEventType.Qualification
+                    or FeedEventType.Disqualification) ||
                 parsedEvent.TriggeredBy is null ||
                 !string.IsNullOrWhiteSpace(parsedEvent.Message))
             {
@@ -212,10 +210,7 @@ public sealed class FeedFetchingWorker(
             return false;
 
         var delta = qualificationCreatedAt.Value - nominationCreatedAt.Value;
-        if (delta < TimeSpan.Zero)
-            return false;
-
-        return delta <= TimeSpan.FromSeconds(45);
+        return delta >= TimeSpan.Zero && delta <= TimeSpan.FromSeconds(45);
     }
 
     private static BeatmapsetEvent? ParseBeatmapsetEvent(OsuBeatmapsetEventsEvent payload)
@@ -228,9 +223,13 @@ public sealed class FeedFetchingWorker(
         {
             SetId = payload.BeatmapsetId,
             TriggeredBy = payload.UserId,
+            CreatedAt = payload.CreatedAt,
             EventType = eventType.Value,
             Message = payload.Message,
+            DiscussionId = payload.DiscussionId,
             PostId = payload.DiscussionPostId,
+            MapperUserId = TryGetMapperUserId(payload.RawJson),
+            Rulesets = TrySerializeRulesets(payload.RawJson),
             RawEvent = payload.RawJson,
             EventId = payload.Id,
         };
@@ -251,7 +250,13 @@ public sealed class FeedFetchingWorker(
         {
             EventId = eventId.Value,
             UserId = userId.Value,
+            UserName = payload.TryGetString("user_name") ?? payload.TryGetNestedString("user", "username"),
+            CreatedAt = TryParseCreatedAt(payload.TryGetString("created_at")),
             GroupId = groupId.Value,
+            GroupName = payload.TryGetString("group_name")
+                ?? payload.TryGetNestedString("group", "short_name")
+                ?? payload.TryGetNestedString("group", "name"),
+            Playmodes = TryExtractGroupPlaymodes(payload),
             EventType = eventType.Value,
             RawEvent = payload.ToJsonString(),
         };
@@ -275,11 +280,60 @@ public sealed class FeedFetchingWorker(
     {
         return rawType.Trim().ToLowerInvariant() switch
         {
-            "user_add" => FeedEventType.GroupAdd,
-            "user_add_playmodes" => FeedEventType.GroupAdd,
-            "user_remove" => FeedEventType.GroupRemove,
-            "user_remove_playmodes" => FeedEventType.GroupRemove,
+            "user_add" or "user_add_playmodes" => FeedEventType.GroupAdd,
+            "user_remove" or "user_remove_playmodes" => FeedEventType.GroupRemove,
             _ => null,
         };
+    }
+
+    private static long? TryGetMapperUserId(string rawEvent)
+    {
+        try
+        {
+            var root = JsonNode.Parse(rawEvent) as JsonObject;
+            return root?.TryGetNestedInt64("beatmapset", "user_id");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TrySerializeRulesets(string rawEvent)
+    {
+        return FeedEnumExtensions.SerializeRulesets(FeedEnumExtensions.ExtractRulesets(rawEvent));
+    }
+
+    private static DateTimeOffset? TryParseCreatedAt(string? rawCreatedAt)
+    {
+        if (string.IsNullOrWhiteSpace(rawCreatedAt))
+            return null;
+
+        return DateTimeOffset.TryParse(rawCreatedAt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var createdAt)
+            ? createdAt
+            : null;
+    }
+
+    private static string? TryExtractGroupPlaymodes(JsonObject payload)
+    {
+        if (payload["playmodes"] is not JsonArray playmodes)
+            return null;
+
+        var normalized = new List<string>();
+        foreach (var playmode in playmodes)
+        {
+            if (playmode is null)
+                continue;
+
+            var value = playmode.ToString();
+            if (FeedEnumExtensions.TryParseRuleset(value, out var ruleset))
+                normalized.Add(ruleset.ToCommandValue());
+            else if (!string.IsNullOrWhiteSpace(value))
+                normalized.Add(value.ToLowerInvariant());
+        }
+
+        return normalized.Count == 0
+            ? null
+            : string.Join(", ", normalized.Distinct());
     }
 }

@@ -17,12 +17,11 @@ public sealed class FeedTypeAutocompleteProvider : IAutocompleteProvider<Autocom
         AutocompleteInteractionContext context)
     {
         var input = option.Value?.Trim() ?? string.Empty;
-        var filtered = Choices
-            .Where(x => string.IsNullOrWhiteSpace(input) ||
-                        (x.StringValue?.Contains(input, StringComparison.OrdinalIgnoreCase) ?? false))
-            .Take(25)
-            .ToList();
-
-        return new ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(filtered);
+        return ValueTask.FromResult<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(
+            Choices
+                .Where(x => string.IsNullOrWhiteSpace(input) ||
+                            (x.StringValue?.Contains(input, StringComparison.OrdinalIgnoreCase) ?? false))
+                .Take(25)
+                .ToList());
     }
 }

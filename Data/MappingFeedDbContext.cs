@@ -32,10 +32,17 @@ public sealed class MappingFeedDbContext(DbContextOptions<MappingFeedDbContext> 
             entity.Property(x => x.EventId).HasColumnName("event_id");
             entity.Property(x => x.SetId).HasColumnName("set_id");
             entity.Property(x => x.TriggeredBy).HasColumnName("triggered_by");
+            entity.Property(x => x.CreatedAt).HasColumnName("created_at");
             entity.Property(x => x.EventType).HasColumnName("event_type").HasConversion<string>();
             entity.Property(x => x.Message).HasColumnName("message");
+            entity.Property(x => x.DiscussionId).HasColumnName("discussion_id");
             entity.Property(x => x.PostId).HasColumnName("post_id");
+            entity.Property(x => x.MapperUserId).HasColumnName("mapper_user_id");
+            entity.Property(x => x.Rulesets).HasColumnName("rulesets");
             entity.Property(x => x.RawEvent).HasColumnName("raw_event");
+
+            entity.HasIndex(x => x.CreatedAt);
+            entity.HasIndex(x => x.SetId);
         });
 
         modelBuilder.Entity<GroupEvent>(entity =>
@@ -44,9 +51,16 @@ public sealed class MappingFeedDbContext(DbContextOptions<MappingFeedDbContext> 
             entity.HasKey(x => x.EventId);
             entity.Property(x => x.EventId).HasColumnName("event_id");
             entity.Property(x => x.UserId).HasColumnName("user_id");
+            entity.Property(x => x.UserName).HasColumnName("user_name");
+            entity.Property(x => x.CreatedAt).HasColumnName("created_at");
             entity.Property(x => x.EventType).HasColumnName("event_type").HasConversion<string>();
             entity.Property(x => x.GroupId).HasColumnName("group_id");
+            entity.Property(x => x.GroupName).HasColumnName("group_name");
+            entity.Property(x => x.Playmodes).HasColumnName("playmodes");
             entity.Property(x => x.RawEvent).HasColumnName("raw_event");
+
+            entity.HasIndex(x => x.CreatedAt);
+            entity.HasIndex(x => x.GroupId);
         });
     }
 }

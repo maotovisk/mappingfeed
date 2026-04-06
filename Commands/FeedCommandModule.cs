@@ -15,15 +15,15 @@ public sealed class FeedCommandModule(
     [SlashCommand("setup-feed", "Interactive setup form for the current channel feed subscription.")]
     public InteractionMessageProperties SetupFeedAsync()
     {
-        if (Context.Interaction.GuildId is null)
+        if (!Context.IsGuildInteraction())
             return new InteractionMessageProperties()
                 .WithContent("This command only works in server channels.")
                 .WithFlags(MessageFlags.Ephemeral);
 
-        var channelId = checked((long)Context.Channel.Id);
+        var channelId = Context.GetChannelId();
         var session = setupSessionStore.StartOrReset(
-            Context.User.Id,
-            Context.Interaction.GuildId,
+            Context.GetUserId(),
+            Context.GetGuildId(),
             channelId);
 
         return FeedSetupUi.BuildMessage(session, "Pick the options below, then press Save.")
@@ -40,10 +40,10 @@ public sealed class FeedCommandModule(
         if (!FeedEnumExtensions.TryParseFeedTypeArgument(type, out var feedType))
             return "Invalid feed type. Use `map` or `group`.";
 
-        if (Context.Interaction.GuildId is null)
+        if (!Context.IsGuildInteraction())
             return "This command only works in server channels.";
 
-        var channelId = checked((long)Context.Channel.Id);
+        var channelId = Context.GetChannelId();
 
         await using var db = await dbContextFactory.CreateDbContextAsync();
 
@@ -62,10 +62,10 @@ public sealed class FeedCommandModule(
     [SlashCommand("feed-status", "Show which feed types are enabled in this channel.")]
     public async Task<string> FeedStatusAsync()
     {
-        if (Context.Interaction.GuildId is null)
+        if (!Context.IsGuildInteraction())
             return "This command only works in server channels.";
 
-        var channelId = checked((long)Context.Channel.Id);
+        var channelId = Context.GetChannelId();
 
         await using var db = await dbContextFactory.CreateDbContextAsync();
 

@@ -292,7 +292,7 @@ public sealed class FeedSetupComponentModule(
             return;
         }
 
-        if (Context.Interaction is not StringMenuInteraction interaction)
+        if (!Context.TryGetStringMenuInteraction(out var interaction))
         {
             await RespondWithSessionMissingAsync("Invalid interaction for feed type selection.");
             return;
@@ -319,7 +319,7 @@ public sealed class FeedSetupComponentModule(
             return;
         }
 
-        if (Context.Interaction is not StringMenuInteraction interaction)
+        if (!Context.TryGetStringMenuInteraction(out var interaction))
         {
             await RespondWithSessionMissingAsync("Invalid interaction for ruleset selection.");
             return;
@@ -342,7 +342,7 @@ public sealed class FeedSetupComponentModule(
             return;
         }
 
-        if (Context.Interaction is not StringMenuInteraction interaction)
+        if (!Context.TryGetStringMenuInteraction(out var interaction))
         {
             await RespondWithSessionMissingAsync("Invalid interaction for event type selection.");
             return;
@@ -365,7 +365,7 @@ public sealed class FeedSetupComponentModule(
             return;
         }
 
-        if (Context.Interaction is not StringMenuInteraction interaction)
+        if (!Context.TryGetStringMenuInteraction(out var interaction))
         {
             await RespondWithSessionMissingAsync("Invalid interaction for group selection.");
             return;
@@ -430,7 +430,7 @@ public sealed class FeedSetupComponentModule(
 
     private bool TryGetActiveSession(out FeedSetupSession session, out string message)
     {
-        if (sessionStore.TryGet(Context.User.Id, out session))
+        if (sessionStore.TryGet(Context.GetUserId(), out session))
         {
             message = string.Empty;
             return true;

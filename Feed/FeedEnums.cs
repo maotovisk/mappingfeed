@@ -1,3 +1,6 @@
+using MappingFeed.Osu;
+using System.Text.Json.Nodes;
+
 namespace MappingFeed.Feed;
 
 public enum FeedType
@@ -138,6 +141,28 @@ public static class FeedEnumExtensions
         }
     }
 
+    public static bool TryParseRulesetId(long? value, out Ruleset ruleset)
+    {
+        switch (value)
+        {
+            case 0:
+                ruleset = Ruleset.Osu;
+                return true;
+            case 1:
+                ruleset = Ruleset.Taiko;
+                return true;
+            case 2:
+                ruleset = Ruleset.Catch;
+                return true;
+            case 3:
+                ruleset = Ruleset.Mania;
+                return true;
+            default:
+                ruleset = default;
+                return false;
+        }
+    }
+
     public static bool TryParseMapEventType(string? value, out FeedEventType eventType)
     {
         switch (value?.Trim().ToLowerInvariant())
@@ -181,6 +206,47 @@ public static class FeedEnumExtensions
         return string.Join("|", rulesets
             .OrderBy(x => x)
             .Select(ToCommandValue));
+    }
+
+    public static HashSet<Ruleset> ExtractRulesets(string rawEvent, string? serializedRulesets = null)
+    {
+        var rulesets = new HashSet<Ruleset>();
+
+        var normalizedRulesets = DeserializeRulesets(serializedRulesets);
+        if (normalizedRulesets is not null)
+            rulesets.UnionWith(normalizedRulesets);
+
+        try
+        {
+            var root = JsonNode.Parse(rawEvent) as JsonObject;
+            if (root?["comment"]?["modes"] is JsonArray commentModes)
+            {
+                foreach (var modeNode in commentModes)
+                {
+                    if (modeNode is null)
+                        continue;
+
+                    if (TryParseRuleset(modeNode.ToString(), out var parsed))
+                        rulesets.Add(parsed);
+                }
+            }
+
+            var mode = root?.TryGetNestedString("beatmap", "mode")
+                ?? root?.TryGetString("mode");
+            if (TryParseRuleset(mode, out var modeRuleset))
+                rulesets.Add(modeRuleset);
+
+            var modeInt = root?.TryGetNestedInt64("beatmap", "mode_int")
+                ?? root?.TryGetInt64("mode_int", "ruleset_id");
+            if (TryParseRulesetId(modeInt, out var modeIntRuleset))
+                rulesets.Add(modeIntRuleset);
+        }
+        catch
+        {
+            // Ignore malformed payload.
+        }
+
+        return rulesets;
     }
 
     public static HashSet<Ruleset>? DeserializeRulesets(string? serializedRulesets)

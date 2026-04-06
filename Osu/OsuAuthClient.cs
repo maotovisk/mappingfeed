@@ -15,14 +15,14 @@ public sealed class OsuAuthClient(
 
     public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(_accessToken) && _expiresAt > DateTimeOffset.UtcNow.AddMinutes(1))
-            return _accessToken;
+        if (HasValidAccessToken())
+            return _accessToken!;
 
         await _lock.WaitAsync(cancellationToken);
         try
         {
-            if (!string.IsNullOrWhiteSpace(_accessToken) && _expiresAt > DateTimeOffset.UtcNow.AddMinutes(1))
-                return _accessToken;
+            if (HasValidAccessToken())
+                return _accessToken!;
 
             using var request = new HttpRequestMessage(HttpMethod.Post, "/oauth/token")
             {
@@ -54,5 +54,11 @@ public sealed class OsuAuthClient(
         {
             _lock.Release();
         }
+    }
+
+    private bool HasValidAccessToken()
+    {
+        return !string.IsNullOrWhiteSpace(_accessToken) &&
+               _expiresAt > DateTimeOffset.UtcNow.AddMinutes(1);
     }
 }
