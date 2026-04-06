@@ -103,12 +103,16 @@ internal static class FeedSetupUi
 
     private static readonly IReadOnlyList<GroupChoice> GroupChoices =
     [
+        new("4", "GMT", "Global Moderation Team"),
         new("7", "NAT", "Nomination Assessment Team"),
         new("11", "DEV", "Developers"),
         new("16", "ALM", "osu! Alumni"),
+        new("22", "SPT", "Technical Support Team"),
         new("28", "BN", "Beatmap Nominators"),
+        new("29", "BOT", "Chat Bots"),
         new("31", "LVD", "Project Loved"),
-        new("32", "PBN", "Probationary Beatmap Nominators"),
+        new("32", "BN", "Beatmap Nominators (Probationary)"),
+        new("33", "PPY", "ppy"),
         new("35", "FA", "Featured Artist"),
         new("48", "BSC", "Beatmap Spotlight Curators"),
         new("50", "TC", "Tournament Committee"),

@@ -87,7 +87,9 @@ internal static class OsuBeatmapsetEventsParser
             id.Value,
             type,
             beatmapsetId.Value,
-            eventNode.TryGetInt64("user_id"),
+            eventNode.TryGetInt64("user_id")
+                ?? eventNode.TryGetNestedInt64("user", "id")
+                ?? eventNode.TryGetNestedInt64("user", "user_id"),
             createdAt,
             discussionId,
             discussionPostId,

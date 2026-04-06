@@ -725,7 +725,10 @@ public static class DatabaseSchemaUpdater
         var setIds = await db.BeatmapsetEvents.AsNoTracking()
             .Where(x =>
                 x.EventType == FeedEventType.Ranked &&
-                (x.RankedHistoryJson == null || x.RankedHistoryJson == ""))
+                (x.RankedHistoryJson == null ||
+                 x.RankedHistoryJson == "" ||
+                 x.RankedHistoryJson.Contains("\"userId\":null") ||
+                 x.RankedHistoryJson.Contains("\"username\":null")))
             .Select(x => x.SetId)
             .Distinct()
             .OrderBy(x => x)
@@ -751,7 +754,10 @@ public static class DatabaseSchemaUpdater
                 .Where(x =>
                     x.SetId == setId &&
                     x.EventType == FeedEventType.Ranked &&
-                    (x.RankedHistoryJson == null || x.RankedHistoryJson == ""))
+                    (x.RankedHistoryJson == null ||
+                     x.RankedHistoryJson == "" ||
+                     x.RankedHistoryJson.Contains("\"userId\":null") ||
+                     x.RankedHistoryJson.Contains("\"username\":null")))
                 .OrderBy(x => x.EventId)
                 .ToListAsync(cancellationToken);
 

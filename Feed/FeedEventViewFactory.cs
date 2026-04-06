@@ -8,6 +8,11 @@ namespace MappingFeed.Feed;
 
 public sealed class FeedEventViewFactory
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
     public Task<FeedEventViewEntry> CreateBeatmapsetEventEntryAsync(
         BeatmapsetEvent beatmapsetEvent,
         CancellationToken cancellationToken)
@@ -125,7 +130,7 @@ public sealed class FeedEventViewFactory
 
         try
         {
-            var snapshots = JsonSerializer.Deserialize<List<RankedHistorySnapshot>>(rankedHistoryJson);
+            var snapshots = JsonSerializer.Deserialize<List<RankedHistorySnapshot>>(rankedHistoryJson, JsonOptions);
             if (snapshots is null || snapshots.Count == 0)
                 return [];
 
