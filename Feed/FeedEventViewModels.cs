@@ -1,20 +1,15 @@
 namespace MappingFeed.Feed;
 
-public sealed record FeedEventColor(byte R, byte G, byte B);
-
 public sealed record FeedEventActor(
     long? UserId,
     string? Username,
     string? AvatarUrl,
     string? Badge);
 
-public sealed record FeedEventVisual(
-    FeedEventColor Color,
-    string? Title,
-    IReadOnlyList<string> Lines,
-    string? Description,
-    string? ThumbnailUrl,
-    string? FooterText);
+public sealed record FeedMapHistoryAction(
+    FeedEventType Action,
+    long? UserId,
+    string? Username);
 
 public sealed record FeedMapEventViewData(
     long SetId,
@@ -22,16 +17,16 @@ public sealed record FeedMapEventViewData(
     string BeatmapsetTitle,
     string MapperName,
     long? MapperUserId,
-    string ModeTags,
+    IReadOnlyList<string> Modes,
     string? Message,
-    string? History);
+    IReadOnlyList<FeedMapHistoryAction> RankedHistory);
 
 public sealed record FeedGroupEventViewData(
     long UserId,
     string UserName,
     long GroupId,
     string GroupName,
-    string? Playmodes,
+    IReadOnlyList<string> Playmodes,
     string UserUrl,
     string GroupUrl);
 
@@ -40,10 +35,7 @@ public sealed record FeedEventViewEntry(
     FeedType FeedType,
     FeedEventType EventType,
     DateTimeOffset? CreatedAt,
-    string Emoji,
-    string DisplayName,
     string PrimaryUrl,
     FeedEventActor? Actor,
-    FeedEventVisual Visual,
     FeedMapEventViewData? Map,
     FeedGroupEventViewData? Group);

@@ -89,8 +89,7 @@ public sealed class FeedSendingWorker(
 
             if (mergePlan.NominationEventIdsToSuppress.Contains(pendingEvent.EventId))
             {
-                subscription.LastEventId = pendingEvent.EventId;
-                await db.SaveChangesAsync(cancellationToken);
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
@@ -118,7 +117,7 @@ public sealed class FeedSendingWorker(
             var rawEventForRuleset = pendingEvent.RawEvent;
             if (pendingEvent.EventType == FeedEventType.Qualification &&
                 hasMergedNomination &&
-                TryExtractRulesets(rawEventForRuleset, pendingEvent.Rulesets).Count == 0)
+                FeedEnumExtensions.ExtractRulesets(rawEventForRuleset, pendingEvent.Rulesets).Count == 0)
             {
                 rawEventForRuleset = mergedNomination!.RawEvent;
             }
@@ -129,15 +128,15 @@ public sealed class FeedSendingWorker(
                     rawEventForRuleset,
                     cancellationToken))
             {
-                subscription.LastEventId = pendingEvent.EventId;
-                await db.SaveChangesAsync(cancellationToken);
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
-            if (!ShouldDispatchToEventTypes(allowedEventTypes, pendingEvent.EventType))
+            if (allowedEventTypes is not null &&
+                allowedEventTypes.Count > 0 &&
+                !allowedEventTypes.Contains(pendingEvent.EventType))
             {
-                subscription.LastEventId = pendingEvent.EventId;
-                await db.SaveChangesAsync(cancellationToken);
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
@@ -152,8 +151,7 @@ public sealed class FeedSendingWorker(
                         .WithEmbeds([embed]),
                     cancellationToken: cancellationToken);
 
-                subscription.LastEventId = pendingEvent.EventId;
-                await db.SaveChangesAsync(cancellationToken);
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -177,13 +175,10 @@ public sealed class FeedSendingWorker(
             return true;
 
         var eventRulesets = string.Equals(rawEvent, pendingEvent.RawEvent, StringComparison.Ordinal)
-            ? TryExtractRulesets(rawEvent, pendingEvent.Rulesets)
-            : TryExtractRulesets(rawEvent, null);
+            ? FeedEnumExtensions.ExtractRulesets(rawEvent, pendingEvent.Rulesets)
+            : FeedEnumExtensions.ExtractRulesets(rawEvent);
         if (eventRulesets.Count > 0)
             return eventRulesets.Overlaps(allowedRulesets);
-
-        if (!ShouldUseRulesetFailsafe(pendingEvent.EventType))
-            return false;
 
         var eventCreatedAt = pendingEvent.CreatedAt ?? TryGetCreatedAt(pendingEvent.RawEvent);
         var fallbackModes = await osuApiClient.GetBeatmapsetModesFailsafeAsync(
@@ -202,21 +197,6 @@ public sealed class FeedSendingWorker(
         }
 
         return false;
-    }
-
-    private static bool ShouldUseRulesetFailsafe(FeedEventType eventType)
-    {
-        return eventType is FeedEventType.Nomination
-            or FeedEventType.Qualification
-            or FeedEventType.Disqualification;
-    }
-
-    private static bool ShouldDispatchToEventTypes(HashSet<FeedEventType>? allowedEventTypes, FeedEventType eventType)
-    {
-        if (allowedEventTypes is null || allowedEventTypes.Count == 0)
-            return true;
-
-        return allowedEventTypes.Contains(eventType);
     }
 
     private async Task<MapMergePlan> BuildMapMergePlanAsync(
@@ -276,68 +256,6 @@ public sealed class FeedSendingWorker(
         return new MapMergePlan(nominationEventIdsToSuppress, nominationForQualification);
     }
 
-    private static HashSet<Ruleset> TryExtractRulesets(string rawEvent, string? serializedRulesets)
-    {
-        var rulesets = new HashSet<Ruleset>();
-
-        var normalizedRulesets = FeedEnumExtensions.DeserializeRulesets(serializedRulesets);
-        if (normalizedRulesets is not null)
-            rulesets.UnionWith(normalizedRulesets);
-
-        try
-        {
-            var root = JsonNode.Parse(rawEvent) as JsonObject;
-            AddRulesetsFromCommentModes(root, rulesets);
-
-            var mode = root?.TryGetNestedString("beatmap", "mode")
-                ?? root?.TryGetString("mode");
-
-            if (FeedEnumExtensions.TryParseRuleset(mode, out var ruleset))
-                rulesets.Add(ruleset);
-
-            var modeInt = root?.TryGetNestedInt64("beatmap", "mode_int")
-                ?? root?.TryGetInt64("mode_int", "ruleset_id");
-
-            switch (modeInt)
-            {
-                case 0:
-                    rulesets.Add(Ruleset.Osu);
-                    break;
-                case 1:
-                    rulesets.Add(Ruleset.Taiko);
-                    break;
-                case 2:
-                    rulesets.Add(Ruleset.Catch);
-                    break;
-                case 3:
-                    rulesets.Add(Ruleset.Mania);
-                    break;
-            }
-        }
-        catch
-        {
-            // Ignore malformed payload.
-        }
-
-        return rulesets;
-    }
-
-    private static void AddRulesetsFromCommentModes(JsonObject? root, ISet<Ruleset> destination)
-    {
-        if (root?["comment"]?["modes"] is not JsonArray modes)
-            return;
-
-        foreach (var mode in modes)
-        {
-            if (mode is null)
-                continue;
-
-            var modeValue = mode.ToString();
-            if (FeedEnumExtensions.TryParseRuleset(modeValue, out var parsed))
-                destination.Add(parsed);
-        }
-    }
-
     private static DateTimeOffset? TryGetCreatedAt(string rawEvent)
     {
         try
@@ -378,15 +296,13 @@ public sealed class FeedSendingWorker(
         {
             if (pendingEvent.EventType == FeedEventType.GroupMove)
             {
-                subscription.LastEventId = pendingEvent.EventId;
-                await db.SaveChangesAsync(cancellationToken);
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
             if (allowedGroupIds is not null && !allowedGroupIds.Contains(pendingEvent.GroupId))
             {
-                subscription.LastEventId = pendingEvent.EventId;
-                await db.SaveChangesAsync(cancellationToken);
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
@@ -401,8 +317,7 @@ public sealed class FeedSendingWorker(
                         .WithEmbeds([embed]),
                     cancellationToken: cancellationToken);
 
-                subscription.LastEventId = pendingEvent.EventId;
-                await db.SaveChangesAsync(cancellationToken);
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -443,6 +358,16 @@ public sealed class FeedSendingWorker(
     private int GetDispatchIntervalSeconds()
     {
         return Math.Max(_options.DispatchIntervalSeconds, MinDispatchIntervalSeconds);
+    }
+
+    private static async Task AdvanceSubscriptionCursorAsync(
+        MappingFeedDbContext db,
+        SubscribedChannel subscription,
+        long eventId,
+        CancellationToken cancellationToken)
+    {
+        subscription.LastEventId = eventId;
+        await db.SaveChangesAsync(cancellationToken);
     }
 
     private sealed record MapEventInfo(BeatmapsetEvent Event, DateTimeOffset? CreatedAt);

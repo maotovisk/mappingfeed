@@ -52,7 +52,6 @@ public sealed class FeedEventViewFactory(
         var actorProfile = beatmapsetEvent.TriggeredBy is null
             ? null
             : await osuApiClient.GetUserProfileAsync(beatmapsetEvent.TriggeredBy.Value, cancellationToken);
-        var actorName = actorProfile?.Username;
         var createdAt = beatmapsetEvent.CreatedAt ?? TryGetCreatedAt(beatmapsetEvent.RawEvent);
         var discussionPostId = beatmapsetEvent.PostId ?? TryGetDiscussionPostId(beatmapsetEvent.RawEvent);
         var discussionId = beatmapsetEvent.DiscussionId ?? TryGetDiscussionId(beatmapsetEvent.RawEvent);
@@ -68,7 +67,7 @@ public sealed class FeedEventViewFactory(
         }
 
         if (string.IsNullOrWhiteSpace(resolvedMessage) &&
-            ShouldUseMessageFailsafe(beatmapsetEvent.EventType) &&
+            beatmapsetEvent.EventType == FeedEventType.Disqualification &&
             beatmapsetEvent.TriggeredBy is not null)
         {
             resolvedMessage = await osuApiClient.GetLatestDiscussionMessageByUserAsync(
@@ -78,61 +77,34 @@ public sealed class FeedEventViewFactory(
                 cancellationToken);
         }
 
-        var modeTags = await ResolveModeTagsAsync(beatmapsetEvent, createdAt, cancellationToken);
+        var modes = await ResolveModesAsync(beatmapsetEvent, createdAt, cancellationToken);
         var mapTitle = beatmapset?.Title ?? $"Beatmapset {beatmapsetEvent.SetId}";
         var mapper = beatmapset?.Creator ?? "Unknown";
         var mapperId = beatmapsetEvent.MapperUserId ?? TryGetMapperUserId(beatmapsetEvent.RawEvent);
         var beatmapsetUrl = $"https://osu.ppy.sh/beatmapsets/{beatmapsetEvent.SetId}";
-        var eventName =
-            $"{GetEventEmoji(beatmapsetEvent.EventType)}  {GetMapEventDisplayName(beatmapsetEvent.EventType)} ({ToDiscordRelative(createdAt)})";
-        var mapperLink = mapperId is null
-            ? mapper
-            : $"[{mapper}](https://osu.ppy.sh/users/{mapperId.Value})";
-        var historyLine = await BuildMapHistoryLineAsync(beatmapsetEvent, cancellationToken);
-        var footerText = BuildMapFooterText(beatmapsetEvent.EventType, actorName, actorProfile?.Badge, resolvedMessage);
-
-        var valueLines = new List<string>
-        {
-            $"**[{mapTitle}]({beatmapsetUrl})**",
-            $"Mapped by {mapperLink} **{modeTags}**",
-        };
-
-        var messageLine = BuildMapMessageLine(beatmapsetEvent.EventType, resolvedMessage);
-        if (!string.IsNullOrWhiteSpace(messageLine))
-            valueLines.Add(messageLine);
-
-        if (!string.IsNullOrWhiteSpace(historyLine))
-            valueLines.Add($"\n{historyLine}");
+        var rankedHistory = await BuildRankedHistoryAsync(beatmapsetEvent, cancellationToken);
+        var message = NormalizeMapMessage(beatmapsetEvent.EventType, resolvedMessage);
 
         return new FeedEventViewEntry(
             beatmapsetEvent.EventId,
             FeedType.Map,
             beatmapsetEvent.EventType,
             createdAt,
-            GetEventEmoji(beatmapsetEvent.EventType),
-            GetMapEventDisplayName(beatmapsetEvent.EventType),
             beatmapsetUrl,
             new FeedEventActor(
                 beatmapsetEvent.TriggeredBy,
                 actorProfile?.Username,
                 actorProfile?.AvatarUrl,
                 actorProfile?.Badge),
-            new FeedEventVisual(
-                GetColor(beatmapsetEvent.EventType),
-                eventName,
-                valueLines,
-                null,
-                BuildBeatmapsetThumbnailUrl(beatmapsetEvent.SetId),
-                footerText),
             new FeedMapEventViewData(
                 beatmapsetEvent.SetId,
                 beatmapsetUrl,
                 mapTitle,
                 mapper,
                 mapperId,
-                modeTags,
-                messageLine,
-                historyLine),
+                modes,
+                message,
+                rankedHistory),
             null);
     }
 
@@ -149,37 +121,24 @@ public sealed class FeedEventViewFactory(
             ?? TryGetGroupName(groupEvent.RawEvent)
             ?? await osuApiClient.GetGroupNameAsync(groupEvent.GroupId, cancellationToken)
             ?? $"Group {groupEvent.GroupId}";
-        var playmodes = groupEvent.Playmodes ?? TryGetGroupPlaymodes(groupEvent.RawEvent);
+        var playmodes = ParsePlaymodes(groupEvent.Playmodes);
+        if (playmodes.Count == 0)
+            playmodes = TryGetGroupPlaymodes(groupEvent.RawEvent);
         var createdAt = groupEvent.CreatedAt ?? TryGetCreatedAt(groupEvent.RawEvent);
-        var userLine = groupEvent.EventType switch
-        {
-            FeedEventType.GroupAdd => $"[{userName}](https://osu.ppy.sh/users/{groupEvent.UserId}) to the",
-            FeedEventType.GroupRemove => $"[{userName}](https://osu.ppy.sh/users/{groupEvent.UserId}) from the",
-            _ => $"[{userName}](https://osu.ppy.sh/users/{groupEvent.UserId}) in",
-        };
-        var groupLine = $"[**{groupName}**](https://osu.ppy.sh/groups/{groupEvent.GroupId})";
-        var description = BuildGroupDescription(groupEvent.EventType, userLine, groupLine, playmodes, createdAt);
+        var userUrl = $"https://osu.ppy.sh/users/{groupEvent.UserId}";
+        var groupUrl = $"https://osu.ppy.sh/groups/{groupEvent.GroupId}";
 
         return new FeedEventViewEntry(
             groupEvent.EventId,
             FeedType.Group,
             groupEvent.EventType,
             createdAt,
-            GetEventEmoji(groupEvent.EventType),
-            groupEvent.EventType.ToDisplayName(),
-            $"https://osu.ppy.sh/users/{groupEvent.UserId}",
+            userUrl,
             new FeedEventActor(
                 groupEvent.UserId,
                 userName,
                 userProfile?.AvatarUrl,
                 userProfile?.Badge),
-            new FeedEventVisual(
-                GetColor(groupEvent.EventType),
-                null,
-                [],
-                description,
-                userProfile?.AvatarUrl,
-                null),
             null,
             new FeedGroupEventViewData(
                 groupEvent.UserId,
@@ -187,42 +146,8 @@ public sealed class FeedEventViewFactory(
                 groupEvent.GroupId,
                 groupName,
                 playmodes,
-                $"https://osu.ppy.sh/users/{groupEvent.UserId}",
-                $"https://osu.ppy.sh/groups/{groupEvent.GroupId}"));
-    }
-
-    private static FeedEventColor GetColor(FeedEventType eventType) => eventType switch
-    {
-        FeedEventType.Nomination => new FeedEventColor(52, 152, 219),
-        FeedEventType.Qualification => new FeedEventColor(255, 89, 120),
-        FeedEventType.Ranked => new FeedEventColor(241, 196, 15),
-        FeedEventType.NominationReset => new FeedEventColor(243, 156, 18),
-        FeedEventType.Unranked => new FeedEventColor(230, 126, 34),
-        FeedEventType.Disqualification => new FeedEventColor(231, 76, 60),
-        FeedEventType.GroupAdd => new FeedEventColor(87, 242, 135),
-        FeedEventType.GroupRemove => new FeedEventColor(201, 164, 255),
-        FeedEventType.GroupMove => new FeedEventColor(52, 152, 219),
-        _ => new FeedEventColor(149, 165, 166),
-    };
-
-    private static string GetEventEmoji(FeedEventType eventType) => eventType switch
-    {
-        FeedEventType.Nomination => "💬",
-        FeedEventType.NominationReset => "↩️",
-        FeedEventType.Qualification => "❤️",
-        FeedEventType.Disqualification => "💔",
-        FeedEventType.Ranked => "💖",
-        FeedEventType.Unranked => "🟠",
-        FeedEventType.GroupAdd => "👾",
-        FeedEventType.GroupRemove => "👾",
-        FeedEventType.GroupMove => "👥",
-        _ => "•",
-    };
-
-    private static string ToDiscordRelative(DateTimeOffset? createdAt)
-    {
-        var timestamp = createdAt ?? DateTimeOffset.UtcNow;
-        return $"<t:{timestamp.ToUnixTimeSeconds()}:R>";
+                userUrl,
+                groupUrl));
     }
 
     private static DateTimeOffset? TryGetCreatedAt(string rawEvent)
@@ -272,14 +197,10 @@ public sealed class FeedEventViewFactory(
             var modeInt = root?.TryGetNestedInt64("beatmap", "mode_int")
                 ?? root?.TryGetInt64("mode_int", "ruleset_id");
 
-            return modeInt switch
-            {
-                0 => Ruleset.Osu.ToCommandValue(),
-                1 => Ruleset.Taiko.ToCommandValue(),
-                2 => Ruleset.Catch.ToCommandValue(),
-                3 => Ruleset.Mania.ToCommandValue(),
-                _ => null,
-            };
+            if (FeedEnumExtensions.TryParseRulesetId(modeInt, out var parsedFromModeInt))
+                return parsedFromModeInt.ToCommandValue();
+
+            return null;
         }
         catch
         {
@@ -316,45 +237,7 @@ public sealed class FeedEventViewFactory(
         }
     }
 
-    private static string BuildGroupDescription(
-        FeedEventType eventType,
-        string userLine,
-        string groupLine,
-        string? playmodes,
-        DateTimeOffset? createdAt)
-    {
-        var label = eventType switch
-        {
-            FeedEventType.GroupAdd => "Added",
-            FeedEventType.GroupRemove => "Removed",
-            _ => eventType.ToDisplayName(),
-        };
-
-        var lines = new List<string>
-        {
-            $"{GetEventEmoji(eventType)} **{label}** ({ToDiscordRelative(createdAt)})",
-            userLine,
-            groupLine,
-        };
-
-        if (!string.IsNullOrWhiteSpace(playmodes))
-            lines.Add($"for [{playmodes}]");
-
-        return string.Join('\n', lines);
-    }
-
-    private static string GetMapEventDisplayName(FeedEventType eventType) => eventType switch
-    {
-        FeedEventType.Nomination => "Nominated",
-        FeedEventType.Qualification => "Qualified",
-        FeedEventType.Disqualification => "Disqualified",
-        FeedEventType.NominationReset => "Nomination Reset",
-        FeedEventType.Ranked => "Ranked",
-        FeedEventType.Unranked => "Unranked",
-        _ => eventType.ToDisplayName(),
-    };
-
-    private static string? BuildMapMessageLine(FeedEventType eventType, string? message)
+    private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
         if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification))
             return null;
@@ -371,41 +254,12 @@ public sealed class FeedEventViewFactory(
         return Trim(normalized, 220);
     }
 
-    private static string? BuildMapFooterText(
-        FeedEventType eventType,
-        string? actorName,
-        string? actorBadge,
-        string? message)
-    {
-        if (string.IsNullOrWhiteSpace(actorName))
-            return null;
-
-        var baseText = string.IsNullOrWhiteSpace(actorBadge)
-            ? actorName!.Trim()
-            : $"{actorName!.Trim()} [{actorBadge.Trim()}]";
-
-        if (eventType is FeedEventType.NominationReset or FeedEventType.Disqualification &&
-            !string.IsNullOrWhiteSpace(message))
-        {
-            return $"{baseText} - \"{Trim(message.Trim(), 53)}\"";
-        }
-
-        return eventType switch
-        {
-            FeedEventType.Nomination => baseText,
-            FeedEventType.Qualification => baseText,
-            FeedEventType.Disqualification => baseText,
-            FeedEventType.NominationReset => baseText,
-            _ => null,
-        };
-    }
-
-    private async Task<string?> BuildMapHistoryLineAsync(
+    private async Task<IReadOnlyList<FeedMapHistoryAction>> BuildRankedHistoryAsync(
         BeatmapsetEvent beatmapsetEvent,
         CancellationToken cancellationToken)
     {
         if (beatmapsetEvent.EventType != FeedEventType.Ranked)
-            return null;
+            return [];
 
         var completeHistory = await osuApiClient.GetCompleteBeatmapsetEventHistoryAsync(
             beatmapsetEvent.SetId,
@@ -424,7 +278,7 @@ public sealed class FeedEventViewFactory(
             .ToList();
 
         if (relevantHistory.Count == 0)
-            return null;
+            return [];
 
         var historyWithActors = relevantHistory
             .Select((x, index) => new RankedHistoryEntry(
@@ -451,20 +305,20 @@ public sealed class FeedEventViewFactory(
                 .ToList();
         }
 
-        var parts = new List<string>();
+        var actions = new List<FeedMapHistoryAction>();
         foreach (var historyEvent in trimmedHistory)
         {
-            if (historyEvent.UserId is null)
-                continue;
+            string? userName = null;
+            if (historyEvent.UserId is not null)
+                userName = await osuApiClient.GetUserNameAsync(historyEvent.UserId.Value, cancellationToken);
 
-            var userName = await osuApiClient.GetUserNameAsync(historyEvent.UserId.Value, cancellationToken);
-            if (string.IsNullOrWhiteSpace(userName))
-                continue;
-
-            parts.Add($"{GetEventEmoji(historyEvent.Type)} {userName}");
+            actions.Add(new FeedMapHistoryAction(
+                historyEvent.Type,
+                historyEvent.UserId,
+                string.IsNullOrWhiteSpace(userName) ? null : userName));
         }
 
-        return parts.Count == 0 ? null : string.Join("  ", parts);
+        return actions;
     }
 
     private static List<RankedHistoryEntry> CoalesceRankedHistory(IReadOnlyList<RankedHistoryEntry> entries)
@@ -568,11 +422,6 @@ public sealed class FeedEventViewFactory(
         };
     }
 
-    private static string BuildBeatmapsetThumbnailUrl(long setId)
-    {
-        return $"https://b.ppy.sh/thumb/{setId}l.jpg";
-    }
-
     private static long? ResolveHistoryUserId(
         IReadOnlyList<RankedHistoryEvent> relevantHistory,
         int index)
@@ -613,18 +462,21 @@ public sealed class FeedEventViewFactory(
     private sealed record RankedHistoryEvent(OsuBeatmapsetEventsEvent Event, FeedEventType Type);
     private sealed record RankedHistoryEntry(OsuBeatmapsetEventsEvent Event, FeedEventType Type, long? UserId);
 
-    private async Task<string> ResolveModeTagsAsync(
+    private async Task<IReadOnlyList<string>> ResolveModesAsync(
         BeatmapsetEvent beatmapsetEvent,
         DateTimeOffset? createdAt,
         CancellationToken cancellationToken)
     {
         var normalizedRulesets = FeedEnumExtensions.DeserializeRulesets(beatmapsetEvent.Rulesets);
         if (normalizedRulesets is not null && normalizedRulesets.Count > 0)
-            return string.Join(string.Empty, normalizedRulesets.OrderBy(x => x).Select(x => $"[{x.ToCommandValue()}]"));
+            return normalizedRulesets
+                .OrderBy(x => x)
+                .Select(x => x.ToCommandValue())
+                .ToList();
 
-        var directTags = TryGetModeTags(beatmapsetEvent.RawEvent);
-        if (directTags.Count > 0)
-            return string.Join(string.Empty, directTags);
+        var directModes = TryGetModes(beatmapsetEvent.RawEvent);
+        if (directModes.Count > 0)
+            return directModes;
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         var relatedEvents = await db.BeatmapsetEvents
@@ -639,15 +491,23 @@ public sealed class FeedEventViewFactory(
         {
             var relatedRulesets = FeedEnumExtensions.DeserializeRulesets(relatedEvent.Rulesets);
             if (relatedRulesets is not null && relatedRulesets.Count > 0)
-                return string.Join(string.Empty, relatedRulesets.OrderBy(x => x).Select(x => $"[{x.ToCommandValue()}]"));
+            {
+                return relatedRulesets
+                    .OrderBy(x => x)
+                    .Select(x => x.ToCommandValue())
+                    .ToList();
+            }
 
-            var relatedTags = TryGetModeTags(relatedEvent.RawEvent);
-            if (relatedTags.Count > 0)
-                return string.Join(string.Empty, relatedTags);
+            var relatedModes = TryGetModes(relatedEvent.RawEvent);
+            if (relatedModes.Count > 0)
+                return relatedModes;
         }
 
-        if (!ShouldUseModeFailsafe(beatmapsetEvent.EventType))
-            return "[osu]";
+        if (beatmapsetEvent.EventType is not (
+                FeedEventType.Nomination
+                or FeedEventType.Qualification
+                or FeedEventType.Disqualification))
+            return ["osu"];
 
         var apiModes = await osuApiClient.GetBeatmapsetModesFailsafeAsync(
             beatmapsetEvent.SetId,
@@ -655,12 +515,12 @@ public sealed class FeedEventViewFactory(
             createdAt,
             cancellationToken);
         if (apiModes.Count > 0)
-            return string.Join(string.Empty, apiModes.Select(x => $"[{x}]") );
+            return apiModes;
 
-        return "[osu]";
+        return ["osu"];
     }
 
-    private static List<string> TryGetModeTags(string rawEvent)
+    private static List<string> TryGetModes(string rawEvent)
     {
         var modes = new List<string>();
 
@@ -678,9 +538,9 @@ public sealed class FeedEventViewFactory(
                     if (!FeedEnumExtensions.TryParseRuleset(rawMode, out var parsed))
                         continue;
 
-                    var tag = $"[{parsed.ToCommandValue()}]";
-                    if (!modes.Contains(tag))
-                        modes.Add(tag);
+                    var mode = parsed.ToCommandValue();
+                    if (!modes.Contains(mode))
+                        modes.Add(mode);
                 }
             }
 
@@ -688,7 +548,7 @@ public sealed class FeedEventViewFactory(
             {
                 var mode = TryGetMode(rawEvent);
                 if (!string.IsNullOrWhiteSpace(mode))
-                    modes.Add($"[{mode}]");
+                    modes.Add(mode);
             }
         }
         catch
@@ -699,16 +559,17 @@ public sealed class FeedEventViewFactory(
         return modes;
     }
 
-    private static bool ShouldUseModeFailsafe(FeedEventType eventType)
+    private static List<string> ParsePlaymodes(string? playmodes)
     {
-        return eventType is FeedEventType.Nomination
-            or FeedEventType.Qualification
-            or FeedEventType.Disqualification;
-    }
+        if (string.IsNullOrWhiteSpace(playmodes))
+            return [];
 
-    private static bool ShouldUseMessageFailsafe(FeedEventType eventType)
-    {
-        return eventType is FeedEventType.Disqualification;
+        return playmodes
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.ToLowerInvariant())
+            .Distinct()
+            .ToList();
     }
 
     private static long? TryGetMapperUserId(string rawEvent)
@@ -737,13 +598,13 @@ public sealed class FeedEventViewFactory(
         }
     }
 
-    private static string? TryGetGroupPlaymodes(string rawEvent)
+    private static List<string> TryGetGroupPlaymodes(string rawEvent)
     {
         try
         {
             var root = JsonNode.Parse(rawEvent) as JsonObject;
             if (root?["playmodes"] is not JsonArray playmodesArray)
-                return null;
+                return [];
 
             var modes = new List<string>();
 
@@ -763,11 +624,13 @@ public sealed class FeedEventViewFactory(
                     modes.Add(rawMode.ToLowerInvariant());
             }
 
-            return modes.Count == 0 ? null : string.Join(", ", modes.Distinct());
+            return modes
+                .Distinct()
+                .ToList();
         }
         catch
         {
-            return null;
+            return [];
         }
     }
 

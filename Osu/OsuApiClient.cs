@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -26,9 +27,15 @@ public sealed class OsuApiClient(
         "rank",
         "unrank",
     ];
+    private static readonly IReadOnlyList<string> EmptyModes = Array.Empty<string>();
+    private static readonly TimeSpan MinRequestInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan DefaultTooManyRequestsDelay = TimeSpan.FromSeconds(10);
+    private const int MaxTooManyRequestsRetries = 2;
 
     private readonly string _baseUrl = osuOptions.Value.BaseUrl.TrimEnd('/');
     private readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(Math.Clamp(feedOptions.Value.ApiCacheMinutes, 5, 20));
+    private readonly SemaphoreSlim _requestSemaphore = new(1, 1);
+    private DateTimeOffset _nextAllowedRequestAtUtc = DateTimeOffset.MinValue;
 
     public async Task<OsuBeatmapsetEventsPayload> GetBeatmapsetEventsAsync(int limit, CancellationToken cancellationToken)
     {
@@ -185,14 +192,7 @@ public sealed class OsuApiClient(
         if (memoryCache.TryGetValue(cacheKey, out string? cachedMessage) && !string.IsNullOrWhiteSpace(cachedMessage))
             return cachedMessage;
 
-        var root = await GetRootAsync(
-            "/api/v2/beatmapsets/discussions",
-            [
-                new("beatmapset_id", setId.ToString()),
-                new("sort", "id_desc"),
-                new("limit", "100"),
-            ],
-            cancellationToken);
+        var root = await GetBeatmapsetDiscussionsRootAsync(setId, 100, cancellationToken);
 
         var discussions = (root.TryGetArray("discussions", "beatmapset_discussions", "included_discussions") ?? [])
             .OfType<JsonObject>()
@@ -252,7 +252,8 @@ public sealed class OsuApiClient(
             return modesFromBeatmapset;
         }
 
-        return [];
+        memoryCache.Set(cacheKey, EmptyModes, _cacheDuration);
+        return EmptyModes;
     }
 
     public async Task<string?> GetLatestDiscussionMessageByUserAsync(
@@ -268,14 +269,7 @@ public sealed class OsuApiClient(
         if (memoryCache.TryGetValue(cacheKey, out string? cachedMessage) && !string.IsNullOrWhiteSpace(cachedMessage))
             return cachedMessage;
 
-        var root = await GetRootAsync(
-            "/api/v2/beatmapsets/discussions",
-            [
-                new("beatmapset_id", setId.ToString()),
-                new("sort", "id_desc"),
-                new("limit", "100"),
-            ],
-            cancellationToken);
+        var root = await GetBeatmapsetDiscussionsRootAsync(setId, 100, cancellationToken);
 
         var candidates = (root.TryGetArray("discussions", "beatmapset_discussions", "included_discussions") ?? [])
             .OfType<JsonObject>()
@@ -412,14 +406,7 @@ public sealed class OsuApiClient(
         long? discussionId,
         CancellationToken cancellationToken)
     {
-        var root = await GetRootAsync(
-            "/api/v2/beatmapsets/discussions",
-            [
-                new("beatmapset_id", setId.ToString()),
-                new("sort", "id_desc"),
-                new("limit", "50"),
-            ],
-            cancellationToken);
+        var root = await GetBeatmapsetDiscussionsRootAsync(setId, 50, cancellationToken);
 
         if (discussionPostId is not null)
         {
@@ -455,50 +442,150 @@ public sealed class OsuApiClient(
         IEnumerable<KeyValuePair<string, string?>> query,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUri(path, query));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await authClient.GetAccessTokenAsync(cancellationToken));
-        request.Headers.Accept.Clear();
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        var uri = BuildUri(path, query);
+        var rateLimitCacheKey = $"osu_rate_limited:{uri}";
+        if (memoryCache.TryGetValue(rateLimitCacheKey, out _))
+            return [];
 
-        using var response = await httpClient.SendAsync(request, cancellationToken);
-        var contentType = response.Content.Headers.ContentType?.MediaType;
-
-        if (!response.IsSuccessStatusCode)
+        for (var attempt = 0; attempt <= MaxTooManyRequestsRetries; attempt++)
         {
-            logger.LogWarning(
-                "osu! API request failed for {Path} with status {StatusCode} (content-type: {ContentType}).",
-                path,
-                (int)response.StatusCode,
-                contentType ?? "unknown");
+            var shouldRetry = false;
+            var retryDelay = TimeSpan.Zero;
+
+            await _requestSemaphore.WaitAsync(cancellationToken);
+            try
+            {
+                var now = DateTimeOffset.UtcNow;
+                if (_nextAllowedRequestAtUtc > now)
+                    await Task.Delay(_nextAllowedRequestAtUtc - now, cancellationToken);
+
+                _nextAllowedRequestAtUtc = DateTimeOffset.UtcNow + MinRequestInterval;
+
+                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await authClient.GetAccessTokenAsync(cancellationToken));
+                request.Headers.Accept.Clear();
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+                using var response = await httpClient.SendAsync(request, cancellationToken);
+                var contentType = response.Content.Headers.ContentType?.MediaType;
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    retryDelay = GetRetryDelay(response)
+                        ?? TimeSpan.FromSeconds(Math.Min(
+                            60,
+                            DefaultTooManyRequestsDelay.TotalSeconds * Math.Pow(2, attempt)));
+
+                    var retryAt = DateTimeOffset.UtcNow + retryDelay;
+                    if (retryAt > _nextAllowedRequestAtUtc)
+                        _nextAllowedRequestAtUtc = retryAt;
+
+                    memoryCache.Set(rateLimitCacheKey, true, retryDelay);
+
+                    if (attempt < MaxTooManyRequestsRetries)
+                    {
+                        shouldRetry = true;
+                        logger.LogWarning(
+                            "osu! API rate-limited for {Path} (status 429, content-type: {ContentType}). Retrying in {DelaySeconds:0.##}s (attempt {Attempt}/{MaxAttempts}).",
+                            path,
+                            contentType ?? "unknown",
+                            retryDelay.TotalSeconds,
+                            attempt + 1,
+                            MaxTooManyRequestsRetries + 1);
+                    }
+                    else
+                    {
+                        logger.LogWarning(
+                            "osu! API request failed for {Path} with status 429 (content-type: {ContentType}).",
+                            path,
+                            contentType ?? "unknown");
+                    }
+                }
+                else if (!response.IsSuccessStatusCode)
+                {
+                    logger.LogWarning(
+                        "osu! API request failed for {Path} with status {StatusCode} (content-type: {ContentType}).",
+                        path,
+                        (int)response.StatusCode,
+                        contentType ?? "unknown");
+                    return [];
+                }
+                else
+                {
+                    var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                    if (string.IsNullOrWhiteSpace(body))
+                        return [];
+
+                    JsonNode? jsonNode;
+                    try
+                    {
+                        jsonNode = JsonNode.Parse(body);
+                    }
+                    catch (JsonException exception)
+                    {
+                        logger.LogWarning(
+                            exception,
+                            "osu! API returned invalid JSON for {Path} (status {StatusCode}, content-type: {ContentType}). Body prefix: {Prefix}",
+                            path,
+                            (int)response.StatusCode,
+                            contentType ?? "unknown",
+                            ToLogPrefix(body));
+                        return [];
+                    }
+
+                    if (jsonNode is JsonObject jsonObject)
+                        return jsonObject;
+
+                    logger.LogWarning("osu! API returned a non-object payload for {Path}.", path);
+                    return [];
+                }
+            }
+            finally
+            {
+                _requestSemaphore.Release();
+            }
+
+            if (shouldRetry)
+            {
+                await Task.Delay(retryDelay, cancellationToken);
+                continue;
+            }
+
             return [];
         }
 
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-            return [];
-
-        JsonNode? jsonNode;
-        try
-        {
-            jsonNode = JsonNode.Parse(body);
-        }
-        catch (JsonException exception)
-        {
-            logger.LogWarning(
-                exception,
-                "osu! API returned invalid JSON for {Path} (status {StatusCode}, content-type: {ContentType}). Body prefix: {Prefix}",
-                path,
-                (int)response.StatusCode,
-                contentType ?? "unknown",
-                ToLogPrefix(body));
-            return [];
-        }
-
-        if (jsonNode is JsonObject jsonObject)
-            return jsonObject;
-
-        logger.LogWarning("osu! API returned a non-object payload for {Path}.", path);
         return [];
+    }
+
+    private static TimeSpan? GetRetryDelay(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
+            return delta;
+
+        if (retryAfter?.Date is { } retryDate)
+        {
+            var remaining = retryDate - DateTimeOffset.UtcNow;
+            if (remaining > TimeSpan.Zero)
+                return remaining;
+        }
+
+        return null;
+    }
+
+    private Task<JsonObject> GetBeatmapsetDiscussionsRootAsync(
+        long setId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        return GetRootAsync(
+            "/api/v2/beatmapsets/discussions",
+            [
+                new("beatmapset_id", setId.ToString()),
+                new("sort", "id_desc"),
+                new("limit", limit.ToString()),
+            ],
+            cancellationToken);
     }
 
     private string BuildUri(string path, IEnumerable<KeyValuePair<string, string?>> query)
@@ -546,15 +633,8 @@ public sealed class OsuApiClient(
         return post?.TryGetString("message");
     }
 
-    private static bool IsPraiseOrHype(string? messageType)
-    {
-        return messageType?.Trim().ToLowerInvariant() switch
-        {
-            "praise" => true,
-            "hype" => true,
-            _ => false,
-        };
-    }
+    private static bool IsPraiseOrHype(string? messageType) =>
+        messageType?.Trim().ToLowerInvariant() is "praise" or "hype";
 
     private static bool IsGeneralDiscussion(JsonObject discussion)
     {
@@ -566,17 +646,8 @@ public sealed class OsuApiClient(
         return beatmapObject?.TryGetInt64("id") is null;
     }
 
-    private static bool IsUsefulDiscussionMessageType(string? messageType)
-    {
-        if (string.IsNullOrWhiteSpace(messageType))
-            return true;
-
-        return messageType.Trim().ToLowerInvariant() switch
-        {
-            "resolved" => false,
-            _ => true,
-        };
-    }
+    private static bool IsUsefulDiscussionMessageType(string? messageType) =>
+        !string.Equals(messageType?.Trim(), "resolved", StringComparison.OrdinalIgnoreCase);
 
     private static DateTimeOffset? ParseDateTimeOffset(string? value)
     {
@@ -594,14 +665,7 @@ public sealed class OsuApiClient(
         DateTimeOffset? atOrBefore,
         CancellationToken cancellationToken)
     {
-        var root = await GetRootAsync(
-            "/api/v2/beatmapsets/discussions",
-            [
-                new("beatmapset_id", setId.ToString()),
-                new("sort", "id_desc"),
-                new("limit", "100"),
-            ],
-            cancellationToken);
+        var root = await GetBeatmapsetDiscussionsRootAsync(setId, 100, cancellationToken);
 
         var beatmapModes = new Dictionary<long, string>();
         foreach (var beatmap in (root.TryGetArray("beatmaps") ?? []).OfType<JsonObject>())

@@ -59,14 +59,12 @@ public static class FeedEventsHandlers
         return false;
     }
 
-    private static FeedEventsCursorPageResponse<TItem> ToPageResponse<TItem>(string feed, FeedCursorPage<TItem> page)
-    {
-        return new FeedEventsCursorPageResponse<TItem>(
+    private static FeedEventsCursorPageResponse<TItem> ToPageResponse<TItem>(string feed, FeedCursorPage<TItem> page) =>
+        new(
             feed,
             page.Items.Count,
             page.NextCursor,
             page.Items);
-    }
 
     private sealed record FeedEventsCursorPageResponse<TItem>(
         string Feed,

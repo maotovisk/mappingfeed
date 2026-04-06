@@ -59,13 +59,11 @@ public sealed class FeedFetchingWorker(
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToList();
-        var existingEventIds = await db.BeatmapsetEvents
+        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToHashSet();
+        var existingIdSet = await db.BeatmapsetEvents
             .Where(x => incomingEventIds.Contains(x.EventId))
             .Select(x => x.EventId)
-            .ToListAsync(cancellationToken);
-
-        var existingIdSet = existingEventIds.ToHashSet();
+            .ToHashSetAsync(cancellationToken);
 
         var newEvents = parsedEvents
             .Where(x => !existingIdSet.Contains(x.EventId))
@@ -96,13 +94,11 @@ public sealed class FeedFetchingWorker(
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToList();
-        var existingEventIds = await db.GroupEvents
+        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToHashSet();
+        var existingIdSet = await db.GroupEvents
             .Where(x => incomingEventIds.Contains(x.EventId))
             .Select(x => x.EventId)
-            .ToListAsync(cancellationToken);
-
-        var existingIdSet = existingEventIds.ToHashSet();
+            .ToHashSetAsync(cancellationToken);
 
         var newEvents = parsedEvents
             .Where(x => !existingIdSet.Contains(x.EventId))
@@ -113,7 +109,7 @@ public sealed class FeedFetchingWorker(
 
         db.GroupEvents.AddRange(newEvents);
         await db.SaveChangesAsync(cancellationToken);
-        
+
         logger.LogInformation("Fetched {Count} group events.", newEvents.Count);
     }
 
@@ -126,9 +122,10 @@ public sealed class FeedFetchingWorker(
 
         foreach (var parsedEvent in parsedEvents)
         {
-            if ((parsedEvent.EventType != FeedEventType.Nomination &&
-                 parsedEvent.EventType != FeedEventType.Qualification &&
-                 parsedEvent.EventType != FeedEventType.Disqualification) ||
+            if (parsedEvent.EventType is not (
+                    FeedEventType.Nomination
+                    or FeedEventType.Qualification
+                    or FeedEventType.Disqualification) ||
                 parsedEvent.TriggeredBy is null ||
                 !string.IsNullOrWhiteSpace(parsedEvent.Message))
             {
@@ -213,10 +210,7 @@ public sealed class FeedFetchingWorker(
             return false;
 
         var delta = qualificationCreatedAt.Value - nominationCreatedAt.Value;
-        if (delta < TimeSpan.Zero)
-            return false;
-
-        return delta <= TimeSpan.FromSeconds(45);
+        return delta >= TimeSpan.Zero && delta <= TimeSpan.FromSeconds(45);
     }
 
     private static BeatmapsetEvent? ParseBeatmapsetEvent(OsuBeatmapsetEventsEvent payload)
@@ -286,10 +280,8 @@ public sealed class FeedFetchingWorker(
     {
         return rawType.Trim().ToLowerInvariant() switch
         {
-            "user_add" => FeedEventType.GroupAdd,
-            "user_add_playmodes" => FeedEventType.GroupAdd,
-            "user_remove" => FeedEventType.GroupRemove,
-            "user_remove_playmodes" => FeedEventType.GroupRemove,
+            "user_add" or "user_add_playmodes" => FeedEventType.GroupAdd,
+            "user_remove" or "user_remove_playmodes" => FeedEventType.GroupRemove,
             _ => null,
         };
     }
@@ -309,53 +301,7 @@ public sealed class FeedFetchingWorker(
 
     private static string? TrySerializeRulesets(string rawEvent)
     {
-        var rulesets = new HashSet<Ruleset>();
-
-        try
-        {
-            var root = JsonNode.Parse(rawEvent) as JsonObject;
-
-            if (root?["comment"]?["modes"] is JsonArray commentModes)
-            {
-                foreach (var modeNode in commentModes)
-                {
-                    if (modeNode is null)
-                        continue;
-
-                    if (FeedEnumExtensions.TryParseRuleset(modeNode.ToString(), out var parsed))
-                        rulesets.Add(parsed);
-                }
-            }
-
-            var mode = root?.TryGetNestedString("beatmap", "mode")
-                ?? root?.TryGetString("mode");
-            if (FeedEnumExtensions.TryParseRuleset(mode, out var modeRuleset))
-                rulesets.Add(modeRuleset);
-
-            var modeInt = root?.TryGetNestedInt64("beatmap", "mode_int")
-                ?? root?.TryGetInt64("mode_int", "ruleset_id");
-            switch (modeInt)
-            {
-                case 0:
-                    rulesets.Add(Ruleset.Osu);
-                    break;
-                case 1:
-                    rulesets.Add(Ruleset.Taiko);
-                    break;
-                case 2:
-                    rulesets.Add(Ruleset.Catch);
-                    break;
-                case 3:
-                    rulesets.Add(Ruleset.Mania);
-                    break;
-            }
-        }
-        catch
-        {
-            // Ignore malformed payload.
-        }
-
-        return FeedEnumExtensions.SerializeRulesets(rulesets);
+        return FeedEnumExtensions.SerializeRulesets(FeedEnumExtensions.ExtractRulesets(rawEvent));
     }
 
     private static DateTimeOffset? TryParseCreatedAt(string? rawCreatedAt)

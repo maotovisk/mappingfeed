@@ -15,6 +15,7 @@ using NetCord.Hosting.Services.ComponentInteractions;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
+const string FrontendCorsPolicy = "FrontendCors";
 
 var environmentFileName = $"appsettings.{builder.Environment.EnvironmentName}.json";
 
@@ -37,6 +38,18 @@ builder.Services.Configure<DiscordOptions>(builder.Configuration.GetSection(Disc
 builder.Services.Configure<OsuOptions>(builder.Configuration.GetSection(OsuOptions.SectionName));
 builder.Services.Configure<FeedOptions>(builder.Configuration.GetSection(FeedOptions.SectionName));
 builder.Services.AddOpenApi();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(FrontendCorsPolicy, policy =>
+    {
+        policy
+            .WithOrigins(
+                "http://localhost:5173",
+                "https://mappingfeed.maot.dev")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
 
 builder.Services.AddDiscordGateway((options, serviceProvider) =>
 {
@@ -73,17 +86,8 @@ builder.Services.AddSingleton<FeedEmbedFactory>();
 builder.Services.AddSingleton<FeedSetupSessionStore>();
 builder.Services.AddSingleton<FeedTypeAutocompleteProvider>();
 
-builder.Services.AddHttpClient<OsuAuthClient>((serviceProvider, client) =>
-{
-    var osuOptions = serviceProvider.GetRequiredService<IOptions<OsuOptions>>().Value;
-    client.BaseAddress = new Uri(osuOptions.BaseUrl);
-});
-
-builder.Services.AddHttpClient<OsuApiClient>((serviceProvider, client) =>
-{
-    var osuOptions = serviceProvider.GetRequiredService<IOptions<OsuOptions>>().Value;
-    client.BaseAddress = new Uri(osuOptions.BaseUrl);
-});
+builder.Services.AddHttpClient<OsuAuthClient>(ConfigureOsuHttpClient);
+builder.Services.AddHttpClient<OsuApiClient>(ConfigureOsuHttpClient);
 
 builder.Services.AddHostedService<FeedFetchingWorker>();
 builder.Services.AddHostedService<FeedSendingWorker>();
@@ -93,8 +97,9 @@ var app = builder.Build();
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var dbContextFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<MappingFeedDbContext>>();
+    var osuApiClient = scope.ServiceProvider.GetRequiredService<OsuApiClient>();
     await using var db = await dbContextFactory.CreateDbContextAsync();
-    await DatabaseSchemaUpdater.EnsureUpdatedAsync(db);
+    await DatabaseSchemaUpdater.EnsureUpdatedAsync(db, osuApiClient);
 }
 
 app.Services
@@ -102,8 +107,16 @@ app.Services
     .AddModule<FeedCommandModule>();
 app.AddComponentInteractionModule<FeedSetupComponentModule>();
 
+app.UseCors(FrontendCorsPolicy);
+
 app.MapFeedEventsApi();
 app.MapOpenApi();
 app.MapScalarApiReference();
 
 await app.RunAsync();
+
+static void ConfigureOsuHttpClient(IServiceProvider serviceProvider, HttpClient client)
+{
+    var osuOptions = serviceProvider.GetRequiredService<IOptions<OsuOptions>>().Value;
+    client.BaseAddress = new Uri(osuOptions.BaseUrl);
+}

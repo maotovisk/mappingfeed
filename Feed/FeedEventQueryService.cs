@@ -16,20 +16,13 @@ public sealed class FeedEventQueryService(
         long? beforeEventId,
         CancellationToken cancellationToken)
     {
-        var take = NormalizeLimit(limit);
-
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var rows = await QueryMapEventsAsync(db, take + 1, beforeEventId, cancellationToken);
-
-        var hasMore = rows.Count > take;
-        var pageRows = rows.Take(take).ToList();
-        var items = await Task.WhenAll(pageRows.Select(x => viewFactory.CreateBeatmapsetEventEntryAsync(x, cancellationToken)));
-
-        var nextCursor = hasMore && pageRows.Count > 0
-            ? pageRows[^1].EventId.ToString()
-            : null;
-
-        return new FeedCursorPage<FeedEventViewEntry>(items, nextCursor);
+        return await GetRecentEventsPageAsync(
+            limit,
+            beforeEventId,
+            QueryMapEventsAsync,
+            (entry, ct) => viewFactory.CreateBeatmapsetEventEntryAsync(entry, ct),
+            x => x.EventId,
+            cancellationToken);
     }
 
     public async Task<FeedCursorPage<FeedEventViewEntry>> GetRecentGroupEventsPageAsync(
@@ -37,17 +30,34 @@ public sealed class FeedEventQueryService(
         long? beforeEventId,
         CancellationToken cancellationToken)
     {
+        return await GetRecentEventsPageAsync(
+            limit,
+            beforeEventId,
+            QueryGroupEventsAsync,
+            (entry, ct) => viewFactory.CreateGroupEventEntryAsync(entry, ct),
+            x => x.EventId,
+            cancellationToken);
+    }
+
+    private async Task<FeedCursorPage<FeedEventViewEntry>> GetRecentEventsPageAsync<TEntry>(
+        int? limit,
+        long? beforeEventId,
+        Func<MappingFeedDbContext, int, long?, CancellationToken, Task<List<TEntry>>> queryRows,
+        Func<TEntry, CancellationToken, Task<FeedEventViewEntry>> buildEntry,
+        Func<TEntry, long> getEventId,
+        CancellationToken cancellationToken)
+    {
         var take = NormalizeLimit(limit);
 
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var rows = await QueryGroupEventsAsync(db, take + 1, beforeEventId, cancellationToken);
+        var rows = await queryRows(db, take + 1, beforeEventId, cancellationToken);
 
         var hasMore = rows.Count > take;
         var pageRows = rows.Take(take).ToList();
-        var items = await Task.WhenAll(pageRows.Select(x => viewFactory.CreateGroupEventEntryAsync(x, cancellationToken)));
+        var items = await Task.WhenAll(pageRows.Select(x => buildEntry(x, cancellationToken)));
 
         var nextCursor = hasMore && pageRows.Count > 0
-            ? pageRows[^1].EventId.ToString()
+            ? getEventId(pageRows[^1]).ToString()
             : null;
 
         return new FeedCursorPage<FeedEventViewEntry>(items, nextCursor);
@@ -92,5 +102,4 @@ public sealed class FeedEventQueryService(
 
         return Math.Clamp(limit.Value, 1, MaxLimit);
     }
-
 }

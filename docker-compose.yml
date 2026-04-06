@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     environment:
       DOTNET_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:${API_PORT:-5000}
       Discord__Token: ${DISCORD_TOKEN:?DISCORD_TOKEN is required}
       Osu__BaseUrl: ${OSU_BASE_URL:-https://osu.ppy.sh}
       Osu__ClientId: ${OSU_CLIENT_ID:?OSU_CLIENT_ID is required}
@@ -20,5 +21,7 @@ services:
       Logging__LogLevel__Microsoft: ${LOG_LEVEL_MICROSOFT:-Warning}
       "Logging__LogLevel__Microsoft.Hosting.Lifetime": ${LOG_LEVEL_HOSTING_LIFETIME:-Information}
       "Logging__LogLevel__System.Net.Http": ${LOG_LEVEL_SYSTEM_NET_HTTP:-Warning}
+    ports:
+      - "${API_PORT:-5000}:${API_PORT:-5000}"
     volumes:
       - ${HOME}/.local/share/mappingfeed:/root/.local/share/mappingfeed
