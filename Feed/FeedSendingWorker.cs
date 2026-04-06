@@ -118,7 +118,7 @@ public sealed class FeedSendingWorker(
             var rawEventForRuleset = pendingEvent.RawEvent;
             if (pendingEvent.EventType == FeedEventType.Qualification &&
                 hasMergedNomination &&
-                TryExtractRulesets(rawEventForRuleset).Count == 0)
+                TryExtractRulesets(rawEventForRuleset, pendingEvent.Rulesets).Count == 0)
             {
                 rawEventForRuleset = mergedNomination!.RawEvent;
             }
@@ -176,14 +176,16 @@ public sealed class FeedSendingWorker(
         if (allowedRulesets is null || allowedRulesets.Count == 0)
             return true;
 
-        var eventRulesets = TryExtractRulesets(rawEvent);
+        var eventRulesets = string.Equals(rawEvent, pendingEvent.RawEvent, StringComparison.Ordinal)
+            ? TryExtractRulesets(rawEvent, pendingEvent.Rulesets)
+            : TryExtractRulesets(rawEvent, null);
         if (eventRulesets.Count > 0)
             return eventRulesets.Overlaps(allowedRulesets);
 
         if (!ShouldUseRulesetFailsafe(pendingEvent.EventType))
             return false;
 
-        var eventCreatedAt = TryGetCreatedAt(pendingEvent.RawEvent);
+        var eventCreatedAt = pendingEvent.CreatedAt ?? TryGetCreatedAt(pendingEvent.RawEvent);
         var fallbackModes = await osuApiClient.GetBeatmapsetModesFailsafeAsync(
             pendingEvent.SetId,
             pendingEvent.TriggeredBy,
@@ -223,7 +225,7 @@ public sealed class FeedSendingWorker(
         CancellationToken cancellationToken)
     {
         var eventInfos = pendingEvents
-            .Select(x => new MapEventInfo(x, TryGetCreatedAt(x.RawEvent)))
+            .Select(x => new MapEventInfo(x, x.CreatedAt ?? TryGetCreatedAt(x.RawEvent)))
             .ToList();
 
         var nominationEventIdsToSuppress = new HashSet<long>();
@@ -274,9 +276,13 @@ public sealed class FeedSendingWorker(
         return new MapMergePlan(nominationEventIdsToSuppress, nominationForQualification);
     }
 
-    private static HashSet<Ruleset> TryExtractRulesets(string rawEvent)
+    private static HashSet<Ruleset> TryExtractRulesets(string rawEvent, string? serializedRulesets)
     {
         var rulesets = new HashSet<Ruleset>();
+
+        var normalizedRulesets = FeedEnumExtensions.DeserializeRulesets(serializedRulesets);
+        if (normalizedRulesets is not null)
+            rulesets.UnionWith(normalizedRulesets);
 
         try
         {

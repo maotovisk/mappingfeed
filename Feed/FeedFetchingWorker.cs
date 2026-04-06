@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Globalization;
 using MappingFeed.Config;
 using MappingFeed.Data;
 using MappingFeed.Data.Entities;
@@ -228,9 +229,13 @@ public sealed class FeedFetchingWorker(
         {
             SetId = payload.BeatmapsetId,
             TriggeredBy = payload.UserId,
+            CreatedAt = payload.CreatedAt,
             EventType = eventType.Value,
             Message = payload.Message,
+            DiscussionId = payload.DiscussionId,
             PostId = payload.DiscussionPostId,
+            MapperUserId = TryGetMapperUserId(payload.RawJson),
+            Rulesets = TrySerializeRulesets(payload.RawJson),
             RawEvent = payload.RawJson,
             EventId = payload.Id,
         };
@@ -251,7 +256,13 @@ public sealed class FeedFetchingWorker(
         {
             EventId = eventId.Value,
             UserId = userId.Value,
+            UserName = payload.TryGetString("user_name") ?? payload.TryGetNestedString("user", "username"),
+            CreatedAt = TryParseCreatedAt(payload.TryGetString("created_at")),
             GroupId = groupId.Value,
+            GroupName = payload.TryGetString("group_name")
+                ?? payload.TryGetNestedString("group", "short_name")
+                ?? payload.TryGetNestedString("group", "name"),
+            Playmodes = TryExtractGroupPlaymodes(payload),
             EventType = eventType.Value,
             RawEvent = payload.ToJsonString(),
         };
@@ -281,5 +292,102 @@ public sealed class FeedFetchingWorker(
             "user_remove_playmodes" => FeedEventType.GroupRemove,
             _ => null,
         };
+    }
+
+    private static long? TryGetMapperUserId(string rawEvent)
+    {
+        try
+        {
+            var root = JsonNode.Parse(rawEvent) as JsonObject;
+            return root?.TryGetNestedInt64("beatmapset", "user_id");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TrySerializeRulesets(string rawEvent)
+    {
+        var rulesets = new HashSet<Ruleset>();
+
+        try
+        {
+            var root = JsonNode.Parse(rawEvent) as JsonObject;
+
+            if (root?["comment"]?["modes"] is JsonArray commentModes)
+            {
+                foreach (var modeNode in commentModes)
+                {
+                    if (modeNode is null)
+                        continue;
+
+                    if (FeedEnumExtensions.TryParseRuleset(modeNode.ToString(), out var parsed))
+                        rulesets.Add(parsed);
+                }
+            }
+
+            var mode = root?.TryGetNestedString("beatmap", "mode")
+                ?? root?.TryGetString("mode");
+            if (FeedEnumExtensions.TryParseRuleset(mode, out var modeRuleset))
+                rulesets.Add(modeRuleset);
+
+            var modeInt = root?.TryGetNestedInt64("beatmap", "mode_int")
+                ?? root?.TryGetInt64("mode_int", "ruleset_id");
+            switch (modeInt)
+            {
+                case 0:
+                    rulesets.Add(Ruleset.Osu);
+                    break;
+                case 1:
+                    rulesets.Add(Ruleset.Taiko);
+                    break;
+                case 2:
+                    rulesets.Add(Ruleset.Catch);
+                    break;
+                case 3:
+                    rulesets.Add(Ruleset.Mania);
+                    break;
+            }
+        }
+        catch
+        {
+            // Ignore malformed payload.
+        }
+
+        return FeedEnumExtensions.SerializeRulesets(rulesets);
+    }
+
+    private static DateTimeOffset? TryParseCreatedAt(string? rawCreatedAt)
+    {
+        if (string.IsNullOrWhiteSpace(rawCreatedAt))
+            return null;
+
+        return DateTimeOffset.TryParse(rawCreatedAt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var createdAt)
+            ? createdAt
+            : null;
+    }
+
+    private static string? TryExtractGroupPlaymodes(JsonObject payload)
+    {
+        if (payload["playmodes"] is not JsonArray playmodes)
+            return null;
+
+        var normalized = new List<string>();
+        foreach (var playmode in playmodes)
+        {
+            if (playmode is null)
+                continue;
+
+            var value = playmode.ToString();
+            if (FeedEnumExtensions.TryParseRuleset(value, out var ruleset))
+                normalized.Add(ruleset.ToCommandValue());
+            else if (!string.IsNullOrWhiteSpace(value))
+                normalized.Add(value.ToLowerInvariant());
+        }
+
+        return normalized.Count == 0
+            ? null
+            : string.Join(", ", normalized.Distinct());
     }
 }

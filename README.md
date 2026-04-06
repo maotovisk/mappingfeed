@@ -3,6 +3,7 @@
 Discord bot that mirrors osu! mapping and group events into Discord channels.
 
 It polls osu! APIs, stores events in SQLite, and dispatches formatted embeds to subscribed channels.
+It also exposes a minimal HTTP API for recent map/group event views.
 
 ## Features
 
@@ -21,6 +22,11 @@ It polls osu! APIs, stores events in SQLite, and dispatches formatted embeds to 
   - group ids
 - Interactive setup via Discord components (`/setup-feed`)
 - Persistent SQLite state (subscriptions, fetched events, cursor per channel/feed)
+- HTTP API for recent events:
+  - View API with cursor pagination:
+    - `GET /api/events/map?limit=20&cursor=<eventId>`
+    - `GET /api/events/group?limit=20&cursor=<eventId>`
+  - Scalar API reference UI (Swagger-like docs)
 
 ## Commands
 
@@ -39,9 +45,17 @@ It polls osu! APIs, stores events in SQLite, and dispatches formatted embeds to 
 - `FeedSendingWorker`
   - Reads pending events per subscription, applies filters, sends Discord messages, advances `LastEventId` cursor.
 - `FeedEmbedFactory`
-  - Builds map/group embeds and enriches text with osu! user/beatmapset data.
+  - Renders embeds from shared feed event view entries.
+- `FeedEventViewFactory`
+  - Builds reusable map/group view entries (shared by embed and API), with shared cache-backed enrichment.
+- `FeedEventQueryService`
+  - Service layer for recent-event DB queries with cursor pagination, reused by HTTP handlers.
+- Minimal API handlers (`Api/Handlers/FeedEventsHandlers`)
+  - Exposes read-only recent-event endpoints.
+- OpenAPI + Scalar
+  - Serves OpenAPI JSON and Scalar API reference UI.
 - `MappingFeedDbContext` + `DatabaseSchemaUpdater`
-  - Maintains SQLite schema and lightweight column backfills.
+  - Maintains SQLite schema/indexes and lightweight column backfills.
 
 ## Requirements
 
@@ -92,7 +106,22 @@ export Osu__BaseUrl="https://osu.ppy.sh"
 dotnet run
 ```
 
-3. Build:
+3. Query recent events:
+
+```bash
+curl "http://localhost:5000/api/events/map?limit=10"
+curl "http://localhost:5000/api/events/group?limit=10"
+```
+
+Each response includes `nextCursor`. For next page, reuse it in the same endpoint as `cursor=<nextCursor>`.
+
+4. Open API docs UI:
+
+```bash
+xdg-open http://localhost:5000/scalar
+```
+
+5. Build:
 
 ```bash
 dotnet build
