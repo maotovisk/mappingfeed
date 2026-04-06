@@ -14,7 +14,6 @@ namespace MappingFeed.Feed;
 public sealed class FeedSendingWorker(
     IDbContextFactory<MappingFeedDbContext> dbContextFactory,
     FeedEmbedFactory embedFactory,
-    OsuApiClient osuApiClient,
     IOptions<FeedOptions> options,
     RestClient restClient,
     ILogger<FeedSendingWorker> logger) : BackgroundService
@@ -115,18 +114,19 @@ public sealed class FeedSendingWorker(
             }
 
             var rawEventForRuleset = pendingEvent.RawEvent;
+            var serializedRulesetsForDispatch = pendingEvent.Rulesets;
             if (pendingEvent.EventType == FeedEventType.Qualification &&
                 hasMergedNomination &&
                 FeedEnumExtensions.ExtractRulesets(rawEventForRuleset, pendingEvent.Rulesets).Count == 0)
             {
                 rawEventForRuleset = mergedNomination!.RawEvent;
+                serializedRulesetsForDispatch = mergedNomination.Rulesets;
             }
 
-            if (!await ShouldDispatchToRulesetsAsync(
+            if (!ShouldDispatchToRulesets(
                     allowedRulesets,
-                    pendingEvent,
-                    rawEventForRuleset,
-                    cancellationToken))
+                    serializedRulesetsForDispatch,
+                    rawEventForRuleset))
             {
                 await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
                 continue;
@@ -165,38 +165,17 @@ public sealed class FeedSendingWorker(
         }
     }
 
-    private async Task<bool> ShouldDispatchToRulesetsAsync(
+    private static bool ShouldDispatchToRulesets(
         HashSet<Ruleset>? allowedRulesets,
-        BeatmapsetEvent pendingEvent,
-        string rawEvent,
-        CancellationToken cancellationToken)
+        string? serializedRulesets,
+        string rawEvent)
     {
         if (allowedRulesets is null || allowedRulesets.Count == 0)
             return true;
 
-        var eventRulesets = string.Equals(rawEvent, pendingEvent.RawEvent, StringComparison.Ordinal)
-            ? FeedEnumExtensions.ExtractRulesets(rawEvent, pendingEvent.Rulesets)
-            : FeedEnumExtensions.ExtractRulesets(rawEvent);
-        if (eventRulesets.Count > 0)
-            return eventRulesets.Overlaps(allowedRulesets);
-
-        var eventCreatedAt = pendingEvent.CreatedAt ?? TryGetCreatedAt(pendingEvent.RawEvent);
-        var fallbackModes = await osuApiClient.GetBeatmapsetModesFailsafeAsync(
-            pendingEvent.SetId,
-            pendingEvent.TriggeredBy,
-            eventCreatedAt,
-            cancellationToken);
-
-        foreach (var fallbackMode in fallbackModes)
-        {
-            if (FeedEnumExtensions.TryParseRuleset(fallbackMode, out var fallbackRuleset) &&
-                allowedRulesets.Contains(fallbackRuleset))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        var eventRulesets = FeedEnumExtensions.DeserializeRulesets(serializedRulesets)
+            ?? FeedEnumExtensions.ExtractRulesets(rawEvent);
+        return eventRulesets.Count == 0 || eventRulesets.Overlaps(allowedRulesets);
     }
 
     private async Task<MapMergePlan> BuildMapMergePlanAsync(

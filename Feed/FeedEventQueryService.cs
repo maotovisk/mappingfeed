@@ -34,7 +34,7 @@ public sealed class FeedEventQueryService(
             limit,
             beforeEventId,
             QueryGroupEventsAsync,
-            (entry, ct) => viewFactory.CreateGroupEventEntryAsync(entry, ct),
+            viewFactory.CreateGroupEventEntryAsync,
             x => x.EventId,
             cancellationToken);
     }

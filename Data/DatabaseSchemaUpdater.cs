@@ -3,6 +3,7 @@ using MappingFeed.Osu;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,9 +11,10 @@ namespace MappingFeed.Data;
 
 public static class DatabaseSchemaUpdater
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public static async Task EnsureUpdatedAsync(
         MappingFeedDbContext db,
-        OsuApiClient? osuApiClient = null,
         CancellationToken cancellationToken = default)
     {
         await db.Database.EnsureCreatedAsync(cancellationToken);
@@ -26,9 +28,17 @@ public static class DatabaseSchemaUpdater
         await EnsureColumnAsync(db, "beatmapset_events", "created_at", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "discussion_id", "INTEGER", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "mapper_user_id", "INTEGER", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "mapper_name", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "beatmapset_title", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "actor_username", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "actor_avatar_url", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "actor_badge", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "rulesets", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "ranked_history_json", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "raw_event", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "user_name", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "group_events", "actor_avatar_url", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "group_events", "actor_badge", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "created_at", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "group_name", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "playmodes", "TEXT", cancellationToken);
@@ -36,14 +46,33 @@ public static class DatabaseSchemaUpdater
         await BackfillNullTextColumnAsync(db, "beatmapset_events", "raw_event", "{}", cancellationToken);
         await BackfillBeatmapsetEventsFromRawEventAsync(db, cancellationToken);
         await BackfillBeatmapsetRulesetsFromOtherEventsAsync(db, cancellationToken);
-        if (osuApiClient is not null)
-            await BackfillBeatmapsetRulesetsFromApiAsync(db, osuApiClient, cancellationToken);
         await BackfillGroupEventsFromRawEventAsync(db, cancellationToken);
 
         await EnsureIndexAsync(db, "ix_beatmapset_events_created_at", "beatmapset_events", "created_at", cancellationToken);
         await EnsureIndexAsync(db, "ix_beatmapset_events_set_id", "beatmapset_events", "set_id", cancellationToken);
         await EnsureIndexAsync(db, "ix_group_events_created_at", "group_events", "created_at", cancellationToken);
         await EnsureIndexAsync(db, "ix_group_events_group_id", "group_events", "group_id", cancellationToken);
+    }
+
+    public static async Task RunApiBackfillAsync(
+        MappingFeedDbContext db,
+        OsuApiClient osuApiClient,
+        TimeSpan apiThrottleDelay,
+        int apiBatchSize,
+        CancellationToken cancellationToken = default)
+    {
+        var context = new ApiBackfillContext(
+            osuApiClient,
+            apiThrottleDelay,
+            Math.Clamp(apiBatchSize, 1, 512));
+
+        await BackfillBeatmapsetRulesetsFromApiAsync(db, context, cancellationToken);
+        await BackfillBeatmapsetMetadataFromApiAsync(db, context, cancellationToken);
+        await BackfillBeatmapsetActorsFromApiAsync(db, context, cancellationToken);
+        await BackfillBeatmapsetMessagesFromApiAsync(db, context, cancellationToken);
+        await BackfillRankedHistorySnapshotsFromApiAsync(db, context, cancellationToken);
+        await BackfillGroupProfilesFromApiAsync(db, context, cancellationToken);
+        await BackfillGroupNamesFromApiAsync(db, context, cancellationToken);
     }
 
     private static async Task EnsureColumnAsync(
@@ -142,7 +171,7 @@ public static class DatabaseSchemaUpdater
 
     private static async Task BackfillBeatmapsetRulesetsFromApiAsync(
         MappingFeedDbContext db,
-        OsuApiClient osuApiClient,
+        ApiBackfillContext context,
         CancellationToken cancellationToken)
     {
         await WithOpenConnectionAsync(db, cancellationToken, async (connection, token) =>
@@ -187,10 +216,12 @@ public static class DatabaseSchemaUpdater
                 IReadOnlyList<string> apiModes;
                 try
                 {
-                    apiModes = await osuApiClient.GetBeatmapsetModesFailsafeAsync(
-                        setId,
-                        preferredUserId: null,
-                        atOrBefore: null,
+                    apiModes = await context.InvokeAsync(
+                        (api, ct) => api.GetBeatmapsetModesFailsafeAsync(
+                            setId,
+                            preferredUserId: null,
+                            atOrBefore: null,
+                            ct),
                         token);
                 }
                 catch
@@ -227,7 +258,7 @@ public static class DatabaseSchemaUpdater
             await using (var select = connection.CreateCommand())
             {
                 select.CommandText = """
-                    SELECT event_id, raw_event, created_at, discussion_id, mapper_user_id, rulesets
+                    SELECT event_id, raw_event, created_at, discussion_id, mapper_user_id, mapper_name, beatmapset_title, actor_username, rulesets
                     FROM beatmapset_events
                     WHERE raw_event IS NOT NULL
                       AND raw_event <> '{}'
@@ -235,6 +266,9 @@ public static class DatabaseSchemaUpdater
                         created_at IS NULL OR
                         discussion_id IS NULL OR
                         mapper_user_id IS NULL OR
+                        mapper_name IS NULL OR TRIM(mapper_name) = '' OR
+                        beatmapset_title IS NULL OR TRIM(beatmapset_title) = '' OR
+                        actor_username IS NULL OR TRIM(actor_username) = '' OR
                         rulesets IS NULL OR
                         TRIM(rulesets) = ''
                       );
@@ -251,7 +285,10 @@ public static class DatabaseSchemaUpdater
                     var existingCreatedAt = ReadNullableString(reader, 2);
                     var existingDiscussionId = ReadNullableInt64(reader, 3);
                     var existingMapperUserId = ReadNullableInt64(reader, 4);
-                    var existingRulesets = ReadNullableString(reader, 5);
+                    var existingMapperName = ReadNullableString(reader, 5);
+                    var existingBeatmapsetTitle = ReadNullableString(reader, 6);
+                    var existingActorUsername = ReadNullableString(reader, 7);
+                    var existingRulesets = ReadNullableString(reader, 8);
 
                     var root = TryParseRawObject(rawEvent);
                     if (root is null)
@@ -273,6 +310,18 @@ public static class DatabaseSchemaUpdater
                     if (mapperUserId is null)
                         mapperUserId = root.TryGetNestedInt64("beatmapset", "user_id");
 
+                    var mapperName = existingMapperName;
+                    if (string.IsNullOrWhiteSpace(mapperName))
+                        mapperName = root.TryGetNestedString("beatmapset", "creator");
+
+                    var beatmapsetTitle = existingBeatmapsetTitle;
+                    if (string.IsNullOrWhiteSpace(beatmapsetTitle))
+                        beatmapsetTitle = BuildBeatmapsetTitle(root);
+
+                    var actorUsername = existingActorUsername;
+                    if (string.IsNullOrWhiteSpace(actorUsername))
+                        actorUsername = root.TryGetNestedString("user", "username");
+
                     var rulesets = existingRulesets;
                     if (string.IsNullOrWhiteSpace(rulesets))
                     {
@@ -286,6 +335,9 @@ public static class DatabaseSchemaUpdater
                     if (!string.Equals(existingCreatedAt, createdAt, StringComparison.Ordinal) ||
                         existingDiscussionId != discussionId ||
                         existingMapperUserId != mapperUserId ||
+                        !string.Equals(existingMapperName, mapperName, StringComparison.Ordinal) ||
+                        !string.Equals(existingBeatmapsetTitle, beatmapsetTitle, StringComparison.Ordinal) ||
+                        !string.Equals(existingActorUsername, actorUsername, StringComparison.Ordinal) ||
                         !string.Equals(existingRulesets, rulesets, StringComparison.Ordinal))
                     {
                         updates.Add(new BeatmapsetEventBackfillUpdate(
@@ -293,6 +345,9 @@ public static class DatabaseSchemaUpdater
                             createdAt,
                             discussionId,
                             mapperUserId,
+                            mapperName,
+                            beatmapsetTitle,
+                            actorUsername,
                             rulesets));
                     }
                 }
@@ -307,6 +362,9 @@ public static class DatabaseSchemaUpdater
                 SET created_at = @created_at,
                     discussion_id = @discussion_id,
                     mapper_user_id = @mapper_user_id,
+                    mapper_name = @mapper_name,
+                    beatmapset_title = @beatmapset_title,
+                    actor_username = @actor_username,
                     rulesets = @rulesets
                 WHERE event_id = @event_id;
                 """;
@@ -314,6 +372,9 @@ public static class DatabaseSchemaUpdater
             var createdAtParameter = AddParameter(update, "@created_at", DbType.String);
             var discussionIdParameter = AddParameter(update, "@discussion_id", DbType.Int64);
             var mapperUserIdParameter = AddParameter(update, "@mapper_user_id", DbType.Int64);
+            var mapperNameParameter = AddParameter(update, "@mapper_name", DbType.String);
+            var beatmapsetTitleParameter = AddParameter(update, "@beatmapset_title", DbType.String);
+            var actorUsernameParameter = AddParameter(update, "@actor_username", DbType.String);
             var rulesetsParameter = AddParameter(update, "@rulesets", DbType.String);
             var eventIdParameter = AddParameter(update, "@event_id", DbType.Int64);
 
@@ -322,6 +383,9 @@ public static class DatabaseSchemaUpdater
                 createdAtParameter.Value = ToDbValue(row.CreatedAt);
                 discussionIdParameter.Value = ToDbValue(row.DiscussionId);
                 mapperUserIdParameter.Value = ToDbValue(row.MapperUserId);
+                mapperNameParameter.Value = ToDbValue(row.MapperName);
+                beatmapsetTitleParameter.Value = ToDbValue(row.BeatmapsetTitle);
+                actorUsernameParameter.Value = ToDbValue(row.ActorUsername);
                 rulesetsParameter.Value = ToDbValue(row.Rulesets);
                 eventIdParameter.Value = row.EventId;
 
@@ -341,12 +405,14 @@ public static class DatabaseSchemaUpdater
             await using (var select = connection.CreateCommand())
             {
                 select.CommandText = """
-                    SELECT event_id, raw_event, user_name, created_at, group_name, playmodes
+                    SELECT event_id, raw_event, user_name, actor_avatar_url, actor_badge, created_at, group_name, playmodes
                     FROM group_events
                     WHERE raw_event IS NOT NULL
                       AND raw_event <> '{}'
                       AND (
                         user_name IS NULL OR TRIM(user_name) = '' OR
+                        actor_avatar_url IS NULL OR TRIM(actor_avatar_url) = '' OR
+                        actor_badge IS NULL OR TRIM(actor_badge) = '' OR
                         created_at IS NULL OR
                         group_name IS NULL OR TRIM(group_name) = '' OR
                         playmodes IS NULL OR TRIM(playmodes) = ''
@@ -362,9 +428,11 @@ public static class DatabaseSchemaUpdater
                         continue;
 
                     var existingUserName = ReadNullableString(reader, 2);
-                    var existingCreatedAt = ReadNullableString(reader, 3);
-                    var existingGroupName = ReadNullableString(reader, 4);
-                    var existingPlaymodes = ReadNullableString(reader, 5);
+                    var existingActorAvatarUrl = ReadNullableString(reader, 3);
+                    var existingActorBadge = ReadNullableString(reader, 4);
+                    var existingCreatedAt = ReadNullableString(reader, 5);
+                    var existingGroupName = ReadNullableString(reader, 6);
+                    var existingPlaymodes = ReadNullableString(reader, 7);
 
                     var root = TryParseRawObject(rawEvent);
                     if (root is null)
@@ -373,6 +441,14 @@ public static class DatabaseSchemaUpdater
                     var userName = existingUserName;
                     if (string.IsNullOrWhiteSpace(userName))
                         userName = root.TryGetString("user_name") ?? root.TryGetNestedString("user", "username");
+
+                    var actorAvatarUrl = existingActorAvatarUrl;
+                    if (string.IsNullOrWhiteSpace(actorAvatarUrl))
+                        actorAvatarUrl = root.TryGetNestedString("user", "avatar_url");
+
+                    var actorBadge = existingActorBadge;
+                    if (string.IsNullOrWhiteSpace(actorBadge))
+                        actorBadge = root.TryGetNestedString("user", "title");
 
                     var createdAt = existingCreatedAt;
                     if (string.IsNullOrWhiteSpace(createdAt))
@@ -395,6 +471,8 @@ public static class DatabaseSchemaUpdater
                         playmodes = TryExtractGroupPlaymodes(root);
 
                     if (!string.Equals(existingUserName, userName, StringComparison.Ordinal) ||
+                        !string.Equals(existingActorAvatarUrl, actorAvatarUrl, StringComparison.Ordinal) ||
+                        !string.Equals(existingActorBadge, actorBadge, StringComparison.Ordinal) ||
                         !string.Equals(existingCreatedAt, createdAt, StringComparison.Ordinal) ||
                         !string.Equals(existingGroupName, groupName, StringComparison.Ordinal) ||
                         !string.Equals(existingPlaymodes, playmodes, StringComparison.Ordinal))
@@ -402,6 +480,8 @@ public static class DatabaseSchemaUpdater
                         updates.Add(new GroupEventBackfillUpdate(
                             eventId,
                             userName,
+                            actorAvatarUrl,
+                            actorBadge,
                             createdAt,
                             groupName,
                             playmodes));
@@ -416,6 +496,8 @@ public static class DatabaseSchemaUpdater
             update.CommandText = """
                 UPDATE group_events
                 SET user_name = @user_name,
+                    actor_avatar_url = @actor_avatar_url,
+                    actor_badge = @actor_badge,
                     created_at = @created_at,
                     group_name = @group_name,
                     playmodes = @playmodes
@@ -423,6 +505,8 @@ public static class DatabaseSchemaUpdater
                 """;
 
             var userNameParameter = AddParameter(update, "@user_name", DbType.String);
+            var actorAvatarUrlParameter = AddParameter(update, "@actor_avatar_url", DbType.String);
+            var actorBadgeParameter = AddParameter(update, "@actor_badge", DbType.String);
             var createdAtParameter = AddParameter(update, "@created_at", DbType.String);
             var groupNameParameter = AddParameter(update, "@group_name", DbType.String);
             var playmodesParameter = AddParameter(update, "@playmodes", DbType.String);
@@ -431,6 +515,8 @@ public static class DatabaseSchemaUpdater
             foreach (var row in updates)
             {
                 userNameParameter.Value = ToDbValue(row.UserName);
+                actorAvatarUrlParameter.Value = ToDbValue(row.ActorAvatarUrl);
+                actorBadgeParameter.Value = ToDbValue(row.ActorBadge);
                 createdAtParameter.Value = ToDbValue(row.CreatedAt);
                 groupNameParameter.Value = ToDbValue(row.GroupName);
                 playmodesParameter.Value = ToDbValue(row.Playmodes);
@@ -439,6 +525,654 @@ public static class DatabaseSchemaUpdater
                 await update.ExecuteNonQueryAsync(token);
             }
         });
+    }
+
+    private static async Task BackfillBeatmapsetMetadataFromApiAsync(
+        MappingFeedDbContext db,
+        ApiBackfillContext context,
+        CancellationToken cancellationToken)
+    {
+        var setIds = await db.BeatmapsetEvents.AsNoTracking()
+            .Where(x =>
+                x.BeatmapsetTitle == null || x.BeatmapsetTitle == "" ||
+                x.MapperName == null || x.MapperName == "")
+            .Select(x => x.SetId)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToListAsync(cancellationToken);
+
+        foreach (var setId in setIds)
+        {
+            OsuBeatmapsetInfo? beatmapset;
+            try
+            {
+                beatmapset = await context.InvokeAsync(
+                    (api, ct) => api.GetBeatmapsetAsync(setId, ct),
+                    cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            var rows = await db.BeatmapsetEvents
+                .Where(x =>
+                    x.SetId == setId &&
+                    (x.BeatmapsetTitle == null || x.BeatmapsetTitle == "" ||
+                     x.MapperName == null || x.MapperName == ""))
+                .ToListAsync(cancellationToken);
+
+            var changed = false;
+            foreach (var row in rows)
+            {
+                if (string.IsNullOrWhiteSpace(row.BeatmapsetTitle))
+                {
+                    var resolvedTitle = FirstNonEmpty(beatmapset?.Title) ?? $"Beatmapset {setId}";
+                    if (!string.Equals(row.BeatmapsetTitle, resolvedTitle, StringComparison.Ordinal))
+                    {
+                        row.BeatmapsetTitle = resolvedTitle;
+                        changed = true;
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(row.MapperName))
+                {
+                    var resolvedMapper = FirstNonEmpty(beatmapset?.Creator) ?? "Unknown";
+                    if (!string.Equals(row.MapperName, resolvedMapper, StringComparison.Ordinal))
+                    {
+                        row.MapperName = resolvedMapper;
+                        changed = true;
+                    }
+                }
+            }
+
+            if (changed)
+                await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private static async Task BackfillBeatmapsetActorsFromApiAsync(
+        MappingFeedDbContext db,
+        ApiBackfillContext context,
+        CancellationToken cancellationToken)
+    {
+        var userIds = await db.BeatmapsetEvents.AsNoTracking()
+            .Where(x =>
+                x.TriggeredBy != null &&
+                (x.ActorUsername == null || x.ActorUsername == "" ||
+                 x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
+                 x.ActorBadge == null || x.ActorBadge == ""))
+            .Select(x => x.TriggeredBy!.Value)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToListAsync(cancellationToken);
+
+        foreach (var userId in userIds)
+        {
+            OsuUserProfileInfo? profile;
+            try
+            {
+                profile = await context.InvokeAsync(
+                    (api, ct) => api.GetUserProfileAsync(userId, ct),
+                    cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            string? fallbackUserName = null;
+            if (string.IsNullOrWhiteSpace(profile?.Username))
+            {
+                try
+                {
+                    fallbackUserName = await context.InvokeAsync(
+                        (api, ct) => api.GetUserNameAsync(userId, ct),
+                        cancellationToken);
+                }
+                catch
+                {
+                    fallbackUserName = null;
+                }
+            }
+
+            var rows = await db.BeatmapsetEvents
+                .Where(x =>
+                    x.TriggeredBy == userId &&
+                    (x.ActorUsername == null || x.ActorUsername == "" ||
+                     x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
+                     x.ActorBadge == null || x.ActorBadge == ""))
+                .ToListAsync(cancellationToken);
+
+            var changed = false;
+            foreach (var row in rows)
+            {
+                var resolvedUserName = FirstNonEmpty(profile?.Username) ?? FirstNonEmpty(fallbackUserName);
+
+                if (string.IsNullOrWhiteSpace(row.ActorUsername) && !string.IsNullOrWhiteSpace(resolvedUserName))
+                {
+                    row.ActorUsername = resolvedUserName;
+                    changed = true;
+                }
+
+                if (string.IsNullOrWhiteSpace(row.ActorAvatarUrl) && !string.IsNullOrWhiteSpace(profile?.AvatarUrl))
+                {
+                    row.ActorAvatarUrl = profile.AvatarUrl;
+                    changed = true;
+                }
+
+                if (string.IsNullOrWhiteSpace(row.ActorBadge) && !string.IsNullOrWhiteSpace(profile?.Badge))
+                {
+                    row.ActorBadge = profile.Badge;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private static async Task BackfillBeatmapsetMessagesFromApiAsync(
+        MappingFeedDbContext db,
+        ApiBackfillContext context,
+        CancellationToken cancellationToken)
+    {
+        long cursor = 0;
+        while (true)
+        {
+            var batch = await db.BeatmapsetEvents
+                .Where(x =>
+                    x.EventId > cursor &&
+                    (x.Message == null || x.Message == "") &&
+                    (x.EventType == FeedEventType.Nomination ||
+                     x.EventType == FeedEventType.Qualification ||
+                     x.EventType == FeedEventType.Disqualification))
+                .OrderBy(x => x.EventId)
+                .Take(context.BatchSize)
+                .ToListAsync(cancellationToken);
+
+            if (batch.Count == 0)
+                break;
+
+            var changed = false;
+            foreach (var row in batch)
+            {
+                var resolved = await ResolveBeatmapsetMessageForBackfillAsync(row, context, cancellationToken);
+                var normalized = NormalizeMapMessage(row.EventType, resolved);
+
+                if (!string.Equals(row.Message, normalized, StringComparison.Ordinal))
+                {
+                    row.Message = normalized;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                await db.SaveChangesAsync(cancellationToken);
+
+            cursor = batch[^1].EventId;
+        }
+    }
+
+    private static async Task BackfillRankedHistorySnapshotsFromApiAsync(
+        MappingFeedDbContext db,
+        ApiBackfillContext context,
+        CancellationToken cancellationToken)
+    {
+        var setIds = await db.BeatmapsetEvents.AsNoTracking()
+            .Where(x =>
+                x.EventType == FeedEventType.Ranked &&
+                (x.RankedHistoryJson == null || x.RankedHistoryJson == ""))
+            .Select(x => x.SetId)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToListAsync(cancellationToken);
+
+        var userNameCache = new Dictionary<long, string?>();
+
+        foreach (var setId in setIds)
+        {
+            IReadOnlyList<OsuBeatmapsetEventsEvent> completeHistory;
+            try
+            {
+                completeHistory = await context.InvokeAsync(
+                    (api, ct) => api.GetCompleteBeatmapsetEventHistoryAsync(setId, ct),
+                    cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            var rankedRows = await db.BeatmapsetEvents
+                .Where(x =>
+                    x.SetId == setId &&
+                    x.EventType == FeedEventType.Ranked &&
+                    (x.RankedHistoryJson == null || x.RankedHistoryJson == ""))
+                .OrderBy(x => x.EventId)
+                .ToListAsync(cancellationToken);
+
+            var changed = false;
+            foreach (var row in rankedRows)
+            {
+                var rankedHistory = await BuildRankedHistorySnapshotAsync(
+                    row.EventId,
+                    completeHistory,
+                    context,
+                    userNameCache,
+                    cancellationToken);
+
+                var serialized = rankedHistory.Count == 0
+                    ? null
+                    : JsonSerializer.Serialize(rankedHistory, JsonOptions);
+
+                if (!string.Equals(row.RankedHistoryJson, serialized, StringComparison.Ordinal))
+                {
+                    row.RankedHistoryJson = serialized;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private static async Task BackfillGroupProfilesFromApiAsync(
+        MappingFeedDbContext db,
+        ApiBackfillContext context,
+        CancellationToken cancellationToken)
+    {
+        var userIds = await db.GroupEvents.AsNoTracking()
+            .Where(x =>
+                x.UserName == null || x.UserName == "" ||
+                x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
+                x.ActorBadge == null || x.ActorBadge == "")
+            .Select(x => x.UserId)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToListAsync(cancellationToken);
+
+        foreach (var userId in userIds)
+        {
+            OsuUserProfileInfo? profile;
+            try
+            {
+                profile = await context.InvokeAsync(
+                    (api, ct) => api.GetUserProfileAsync(userId, ct),
+                    cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            string? fallbackUserName = null;
+            if (string.IsNullOrWhiteSpace(profile?.Username))
+            {
+                try
+                {
+                    fallbackUserName = await context.InvokeAsync(
+                        (api, ct) => api.GetUserNameAsync(userId, ct),
+                        cancellationToken);
+                }
+                catch
+                {
+                    fallbackUserName = null;
+                }
+            }
+
+            var rows = await db.GroupEvents
+                .Where(x =>
+                    x.UserId == userId &&
+                    (x.UserName == null || x.UserName == "" ||
+                     x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
+                     x.ActorBadge == null || x.ActorBadge == ""))
+                .ToListAsync(cancellationToken);
+
+            var changed = false;
+            foreach (var row in rows)
+            {
+                var resolvedUserName = FirstNonEmpty(profile?.Username) ?? FirstNonEmpty(fallbackUserName);
+
+                if (string.IsNullOrWhiteSpace(row.UserName) && !string.IsNullOrWhiteSpace(resolvedUserName))
+                {
+                    row.UserName = resolvedUserName;
+                    changed = true;
+                }
+
+                if (string.IsNullOrWhiteSpace(row.ActorAvatarUrl) && !string.IsNullOrWhiteSpace(profile?.AvatarUrl))
+                {
+                    row.ActorAvatarUrl = profile.AvatarUrl;
+                    changed = true;
+                }
+
+                if (string.IsNullOrWhiteSpace(row.ActorBadge) && !string.IsNullOrWhiteSpace(profile?.Badge))
+                {
+                    row.ActorBadge = profile.Badge;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private static async Task BackfillGroupNamesFromApiAsync(
+        MappingFeedDbContext db,
+        ApiBackfillContext context,
+        CancellationToken cancellationToken)
+    {
+        var groupIds = await db.GroupEvents.AsNoTracking()
+            .Where(x => x.GroupName == null || x.GroupName == "")
+            .Select(x => x.GroupId)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToListAsync(cancellationToken);
+
+        foreach (var groupId in groupIds)
+        {
+            string? groupName;
+            try
+            {
+                groupName = await context.InvokeAsync(
+                    (api, ct) => api.GetGroupNameAsync(groupId, ct),
+                    cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(groupName))
+                continue;
+
+            var rows = await db.GroupEvents
+                .Where(x => x.GroupId == groupId && (x.GroupName == null || x.GroupName == ""))
+                .ToListAsync(cancellationToken);
+
+            if (rows.Count == 0)
+                continue;
+
+            foreach (var row in rows)
+                row.GroupName = groupName;
+
+            await db.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private static async Task<string?> ResolveBeatmapsetMessageForBackfillAsync(
+        Data.Entities.BeatmapsetEvent beatmapsetEvent,
+        ApiBackfillContext context,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(beatmapsetEvent.Message))
+            return beatmapsetEvent.Message;
+
+        if (beatmapsetEvent.TriggeredBy is not null)
+        {
+            if (beatmapsetEvent.EventType is FeedEventType.Nomination or FeedEventType.Qualification)
+            {
+                var praiseOrHypeMessage = await context.InvokeAsync(
+                    (api, ct) => api.GetLatestPraiseOrHypeMessageAsync(
+                        beatmapsetEvent.SetId,
+                        beatmapsetEvent.TriggeredBy.Value,
+                        beatmapsetEvent.CreatedAt,
+                        ct),
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(praiseOrHypeMessage))
+                    return praiseOrHypeMessage;
+            }
+
+            if (beatmapsetEvent.EventType == FeedEventType.Disqualification)
+            {
+                var discussionMessageByUser = await context.InvokeAsync(
+                    (api, ct) => api.GetLatestDiscussionMessageByUserAsync(
+                        beatmapsetEvent.SetId,
+                        beatmapsetEvent.TriggeredBy.Value,
+                        beatmapsetEvent.CreatedAt,
+                        ct),
+                    cancellationToken);
+                if (!string.IsNullOrWhiteSpace(discussionMessageByUser))
+                    return discussionMessageByUser;
+            }
+        }
+
+        if (beatmapsetEvent.PostId is not null || beatmapsetEvent.DiscussionId is not null)
+        {
+            var discussionMessage = await context.InvokeAsync(
+                (api, ct) => api.GetBeatmapsetDiscussionMessageAsync(
+                    beatmapsetEvent.SetId,
+                    beatmapsetEvent.PostId,
+                    beatmapsetEvent.DiscussionId,
+                    ct),
+                cancellationToken);
+
+            if (!string.IsNullOrWhiteSpace(discussionMessage))
+                return discussionMessage;
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
+    {
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification))
+            return null;
+
+        if (string.IsNullOrWhiteSpace(message))
+            return null;
+
+        var normalized = string.Join(' ', message
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+        if (string.IsNullOrWhiteSpace(normalized))
+            return null;
+
+        return normalized.Length <= 220
+            ? normalized
+            : normalized[..Math.Max(0, 217)] + "...";
+    }
+
+    private static async Task<IReadOnlyList<RankedHistorySnapshot>> BuildRankedHistorySnapshotAsync(
+        long eventId,
+        IReadOnlyList<OsuBeatmapsetEventsEvent> completeHistory,
+        ApiBackfillContext context,
+        Dictionary<long, string?> userNameCache,
+        CancellationToken cancellationToken)
+    {
+        var relevantHistory = completeHistory
+            .Where(x => x.Id <= eventId)
+            .Select(x => new
+            {
+                Event = x,
+                Type = MapHistoryEventType(x.Type),
+            })
+            .Where(x => x.Type is not null)
+            .Select(x => new RankedHistoryEvent(x.Event, x.Type!.Value))
+            .OrderBy(x => x.Event.Id)
+            .ToList();
+
+        if (relevantHistory.Count == 0)
+            return [];
+
+        var historyWithActors = relevantHistory
+            .Select((x, index) => new RankedHistoryEntry(
+                x.Event,
+                x.Type,
+                ResolveHistoryUserId(relevantHistory, index)))
+            .ToList();
+        historyWithActors = CoalesceRankedHistory(historyWithActors);
+
+        var lastQualification = historyWithActors.LastOrDefault(x => x.Type == FeedEventType.Qualification);
+        var trimmedHistory = historyWithActors
+            .OrderByDescending(x => x.Event.Id)
+            .Take(8)
+            .OrderBy(x => x.Event.Id)
+            .ToList();
+
+        if (lastQualification is not null &&
+            trimmedHistory.All(x => x.Event.Id != lastQualification.Event.Id))
+        {
+            trimmedHistory.RemoveAt(0);
+            trimmedHistory.Add(lastQualification);
+            trimmedHistory = trimmedHistory
+                .OrderBy(x => x.Event.Id)
+                .ToList();
+        }
+
+        var actions = new List<RankedHistorySnapshot>();
+        foreach (var historyEvent in trimmedHistory)
+        {
+            string? userName = null;
+            if (historyEvent.UserId is not null)
+            {
+                var userId = historyEvent.UserId.Value;
+                if (!userNameCache.TryGetValue(userId, out userName))
+                {
+                    userName = await context.InvokeAsync(
+                        (api, ct) => api.GetUserNameAsync(userId, ct),
+                        cancellationToken);
+                    userNameCache[userId] = userName;
+                }
+            }
+
+            actions.Add(new RankedHistorySnapshot(
+                historyEvent.Type,
+                historyEvent.UserId,
+                string.IsNullOrWhiteSpace(userName) ? null : userName));
+        }
+
+        return actions;
+    }
+
+    private static List<RankedHistoryEntry> CoalesceRankedHistory(IReadOnlyList<RankedHistoryEntry> entries)
+    {
+        var ordered = entries
+            .OrderBy(x => x.Event.Id)
+            .ToList();
+
+        var coalesced = new List<RankedHistoryEntry>();
+        foreach (var entry in ordered)
+        {
+            if (coalesced.Count == 0)
+            {
+                coalesced.Add(entry);
+                continue;
+            }
+
+            var previous = coalesced[^1];
+
+            if (entry.Type == FeedEventType.Qualification &&
+                previous.Type == FeedEventType.Nomination &&
+                IsLikelyLinkedNominationAndQualification(previous, entry))
+            {
+                coalesced[^1] = entry;
+                continue;
+            }
+
+            if (AreLikelyDuplicateHistoryEntries(previous, entry))
+                continue;
+
+            coalesced.Add(entry);
+        }
+
+        return coalesced;
+    }
+
+    private static bool IsLikelyLinkedNominationAndQualification(
+        RankedHistoryEntry nomination,
+        RankedHistoryEntry qualification)
+    {
+        if (nomination.UserId is not null &&
+            qualification.UserId is not null &&
+            nomination.UserId != qualification.UserId)
+        {
+            return false;
+        }
+
+        return IsCloseInTime(nomination.Event.CreatedAt, qualification.Event.CreatedAt, TimeSpan.FromMinutes(2));
+    }
+
+    private static bool AreLikelyDuplicateHistoryEntries(
+        RankedHistoryEntry previous,
+        RankedHistoryEntry current)
+    {
+        if (previous.Type != current.Type)
+            return false;
+
+        if (current.Type == FeedEventType.Nomination)
+            return false;
+
+        if (previous.UserId is not null &&
+            current.UserId is not null &&
+            previous.UserId != current.UserId)
+        {
+            return false;
+        }
+
+        return IsCloseInTime(previous.Event.CreatedAt, current.Event.CreatedAt, TimeSpan.FromMinutes(2));
+    }
+
+    private static bool IsCloseInTime(
+        DateTimeOffset? earlier,
+        DateTimeOffset? later,
+        TimeSpan maxGap)
+    {
+        if (earlier is null || later is null)
+            return false;
+
+        var delta = later.Value - earlier.Value;
+        if (delta < TimeSpan.Zero)
+            return false;
+
+        return delta <= maxGap;
+    }
+
+    private static FeedEventType? MapHistoryEventType(string rawType)
+    {
+        return rawType.Trim().ToLowerInvariant() switch
+        {
+            "nominate" => FeedEventType.Nomination,
+            "nomination_reset" => FeedEventType.NominationReset,
+            "qualify" => FeedEventType.Qualification,
+            "disqualify" => FeedEventType.Disqualification,
+            _ => null,
+        };
+    }
+
+    private static long? ResolveHistoryUserId(
+        IReadOnlyList<RankedHistoryEvent> relevantHistory,
+        int index)
+    {
+        var historyEvent = relevantHistory[index];
+        var sourceEvent = historyEvent.Event;
+
+        if (sourceEvent.UserId is not null)
+            return sourceEvent.UserId.Value;
+
+        if (historyEvent.Type != FeedEventType.Qualification)
+            return null;
+
+        for (var i = index - 1; i >= 0; i--)
+        {
+            var (candidateEvent, candidateType) = relevantHistory[i];
+            if (candidateType != FeedEventType.Nomination || candidateEvent.UserId is null)
+                continue;
+
+            if (sourceEvent.CreatedAt is not null && candidateEvent.CreatedAt is not null)
+            {
+                var delta = sourceEvent.CreatedAt.Value - candidateEvent.CreatedAt.Value;
+                if (delta < TimeSpan.Zero || delta > TimeSpan.FromMinutes(2))
+                    continue;
+            }
+
+            return candidateEvent.UserId.Value;
+        }
+
+        return null;
     }
 
     private static JsonObject? TryParseRawObject(string rawEvent)
@@ -469,6 +1203,22 @@ public static class DatabaseSchemaUpdater
         return root.TryGetNestedInt64("discussion", "id")
             ?? root.TryGetNestedInt64("beatmap_discussion", "id")
             ?? root.TryGetNestedInt64("comment", "beatmap_discussion_id");
+    }
+
+    private static string? BuildBeatmapsetTitle(JsonObject root)
+    {
+        var artist = root.TryGetNestedString("beatmapset", "artist");
+        var title = root.TryGetNestedString("beatmapset", "title");
+
+        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
+            return $"{artist} - {title}";
+
+        return FirstNonEmpty(title);
+    }
+
+    private static string? FirstNonEmpty(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static string? TryExtractGroupPlaymodes(JsonObject root)
@@ -556,17 +1306,57 @@ public static class DatabaseSchemaUpdater
         }
     }
 
+    private sealed class ApiBackfillContext(
+        OsuApiClient apiClient,
+        TimeSpan throttleDelay,
+        int batchSize)
+    {
+        public int BatchSize { get; } = batchSize;
+
+        private DateTimeOffset _nextAllowedRequestAtUtc = DateTimeOffset.MinValue;
+
+        public async Task<T> InvokeAsync<T>(
+            Func<OsuApiClient, CancellationToken, Task<T>> operation,
+            CancellationToken cancellationToken)
+        {
+            if (throttleDelay > TimeSpan.Zero)
+            {
+                var now = DateTimeOffset.UtcNow;
+                if (_nextAllowedRequestAtUtc > now)
+                    await Task.Delay(_nextAllowedRequestAtUtc - now, cancellationToken);
+            }
+
+            var result = await operation(apiClient, cancellationToken);
+            _nextAllowedRequestAtUtc = DateTimeOffset.UtcNow + throttleDelay;
+            return result;
+        }
+    }
+
     private sealed record BeatmapsetEventBackfillUpdate(
         long EventId,
         string? CreatedAt,
         long? DiscussionId,
         long? MapperUserId,
+        string? MapperName,
+        string? BeatmapsetTitle,
+        string? ActorUsername,
         string? Rulesets);
 
     private sealed record GroupEventBackfillUpdate(
         long EventId,
         string? UserName,
+        string? ActorAvatarUrl,
+        string? ActorBadge,
         string? CreatedAt,
         string? GroupName,
         string? Playmodes);
+
+    private sealed record RankedHistorySnapshot(
+        FeedEventType Action,
+        long? UserId,
+        string? Username);
+
+    private sealed record RankedHistoryEvent(OsuBeatmapsetEventsEvent Event, FeedEventType Type);
+
+    private sealed record RankedHistoryEntry(OsuBeatmapsetEventsEvent Event, FeedEventType Type, long? UserId);
 }

@@ -91,15 +91,15 @@ builder.Services.AddHttpClient<OsuApiClient>(ConfigureOsuHttpClient);
 
 builder.Services.AddHostedService<FeedFetchingWorker>();
 builder.Services.AddHostedService<FeedSendingWorker>();
+builder.Services.AddHostedService<ApiBackfillWorker>();
 
 var app = builder.Build();
 
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var dbContextFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<MappingFeedDbContext>>();
-    var osuApiClient = scope.ServiceProvider.GetRequiredService<OsuApiClient>();
     await using var db = await dbContextFactory.CreateDbContextAsync();
-    await DatabaseSchemaUpdater.EnsureUpdatedAsync(db, osuApiClient);
+    await DatabaseSchemaUpdater.EnsureUpdatedAsync(db);
 }
 
 app.Services

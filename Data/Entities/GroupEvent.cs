@@ -8,6 +8,10 @@ public sealed class GroupEvent
 
     public string? UserName { get; set; }
 
+    public string? ActorAvatarUrl { get; set; }
+
+    public string? ActorBadge { get; set; }
+
     public DateTimeOffset? CreatedAt { get; set; }
 
     public FeedEventType EventType { get; set; }

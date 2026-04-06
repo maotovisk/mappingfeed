@@ -14,13 +14,25 @@ public sealed class BeatmapsetEvent
 
     public string? Message { get; set; }
 
+    public string? ActorUsername { get; set; }
+
+    public string? ActorAvatarUrl { get; set; }
+
+    public string? ActorBadge { get; set; }
+
     public long? DiscussionId { get; set; }
 
     public long? PostId { get; set; }
 
     public long? MapperUserId { get; set; }
 
+    public string? MapperName { get; set; }
+
+    public string? BeatmapsetTitle { get; set; }
+
     public string? Rulesets { get; set; }
+
+    public string? RankedHistoryJson { get; set; }
 
     public string RawEvent { get; set; } = "{}";
 
