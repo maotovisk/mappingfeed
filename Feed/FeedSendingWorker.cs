@@ -86,6 +86,12 @@ public sealed class FeedSendingWorker(
             var hasMergedNomination = mergePlan.NominationForQualification.TryGetValue(pendingEvent.EventId, out var mergedNominationValue);
             var mergedNomination = hasMergedNomination ? mergedNominationValue : null;
 
+            if (FeedVisibilityRules.ShouldSuppressFromPublicFeed(pendingEvent))
+            {
+                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
+                continue;
+            }
+
             if (mergePlan.NominationEventIdsToSuppress.Contains(pendingEvent.EventId))
             {
                 await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);

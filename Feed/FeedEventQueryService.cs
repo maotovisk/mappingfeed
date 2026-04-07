@@ -87,6 +87,7 @@ public sealed class FeedEventQueryService(
         var query = db.BeatmapsetEvents.AsNoTracking();
         if (beforeEventId is not null)
             query = query.Where(x => x.EventId < beforeEventId.Value);
+        query = query.ExcludeSuppressedFromPublicFeed();
 
         if (filters.EventTypes is { Count: > 0 })
         {
