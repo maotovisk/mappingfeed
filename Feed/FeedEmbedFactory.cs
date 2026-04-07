@@ -154,10 +154,10 @@ public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
     {
         FeedEventType.Nomination => new Color(52, 152, 219),
         FeedEventType.Qualification => new Color(255, 89, 120),
-        FeedEventType.Ranked => new Color(241, 196, 15),
-        FeedEventType.NominationReset => new Color(243, 156, 18),
+        FeedEventType.Ranked => new Color(47, 208, 130),
+        FeedEventType.NominationReset => new Color(149, 165, 166),
         FeedEventType.Unranked => new Color(230, 126, 34),
-        FeedEventType.Disqualification => new Color(231, 76, 60),
+        FeedEventType.Disqualification => new Color(255, 161, 38),
         FeedEventType.GroupAdd => new Color(87, 242, 135),
         FeedEventType.GroupRemove => new Color(201, 164, 255),
         FeedEventType.GroupMove => new Color(52, 152, 219),
