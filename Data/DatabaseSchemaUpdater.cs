@@ -33,14 +33,17 @@ public static class DatabaseSchemaUpdater
         await EnsureColumnAsync(db, "beatmapset_events", "actor_username", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "actor_avatar_url", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "actor_badge", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "actor_color", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "rulesets", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "ranked_history_json", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "raw_event", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "user_name", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "actor_avatar_url", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "actor_badge", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "group_events", "actor_color", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "created_at", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "group_name", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "group_events", "group_color", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "playmodes", "TEXT", cancellationToken);
         await BackfillNullTextColumnAsync(db, "group_events", "raw_event", "{}", cancellationToken);
         await BackfillNullTextColumnAsync(db, "beatmapset_events", "raw_event", "{}", cancellationToken);
@@ -72,7 +75,7 @@ public static class DatabaseSchemaUpdater
         await BackfillBeatmapsetMessagesFromApiAsync(db, context, cancellationToken);
         await BackfillRankedHistorySnapshotsFromApiAsync(db, context, cancellationToken);
         await BackfillGroupProfilesFromApiAsync(db, context, cancellationToken);
-        await BackfillGroupNamesFromApiAsync(db, context, cancellationToken);
+        await BackfillGroupMetadataFromApiAsync(db, context, cancellationToken);
     }
 
     private static async Task EnsureColumnAsync(
@@ -258,7 +261,7 @@ public static class DatabaseSchemaUpdater
             await using (var select = connection.CreateCommand())
             {
                 select.CommandText = """
-                    SELECT event_id, raw_event, created_at, discussion_id, mapper_user_id, mapper_name, beatmapset_title, actor_username, rulesets
+                    SELECT event_id, raw_event, created_at, discussion_id, mapper_user_id, mapper_name, beatmapset_title, actor_username, actor_color, rulesets
                     FROM beatmapset_events
                     WHERE raw_event IS NOT NULL
                       AND raw_event <> '{}'
@@ -269,6 +272,7 @@ public static class DatabaseSchemaUpdater
                         mapper_name IS NULL OR TRIM(mapper_name) = '' OR
                         beatmapset_title IS NULL OR TRIM(beatmapset_title) = '' OR
                         actor_username IS NULL OR TRIM(actor_username) = '' OR
+                        actor_color IS NULL OR TRIM(actor_color) = '' OR
                         rulesets IS NULL OR
                         TRIM(rulesets) = ''
                       );
@@ -288,7 +292,8 @@ public static class DatabaseSchemaUpdater
                     var existingMapperName = ReadNullableString(reader, 5);
                     var existingBeatmapsetTitle = ReadNullableString(reader, 6);
                     var existingActorUsername = ReadNullableString(reader, 7);
-                    var existingRulesets = ReadNullableString(reader, 8);
+                    var existingActorColor = ReadNullableString(reader, 8);
+                    var existingRulesets = ReadNullableString(reader, 9);
 
                     var root = TryParseRawObject(rawEvent);
                     if (root is null)
@@ -322,6 +327,10 @@ public static class DatabaseSchemaUpdater
                     if (string.IsNullOrWhiteSpace(actorUsername))
                         actorUsername = root.TryGetNestedString("user", "username");
 
+                    var actorColor = existingActorColor;
+                    if (string.IsNullOrWhiteSpace(actorColor))
+                        actorColor = TryExtractActorColor(root);
+
                     var rulesets = existingRulesets;
                     if (string.IsNullOrWhiteSpace(rulesets))
                     {
@@ -338,6 +347,7 @@ public static class DatabaseSchemaUpdater
                         !string.Equals(existingMapperName, mapperName, StringComparison.Ordinal) ||
                         !string.Equals(existingBeatmapsetTitle, beatmapsetTitle, StringComparison.Ordinal) ||
                         !string.Equals(existingActorUsername, actorUsername, StringComparison.Ordinal) ||
+                        !string.Equals(existingActorColor, actorColor, StringComparison.Ordinal) ||
                         !string.Equals(existingRulesets, rulesets, StringComparison.Ordinal))
                     {
                         updates.Add(new BeatmapsetEventBackfillUpdate(
@@ -348,6 +358,7 @@ public static class DatabaseSchemaUpdater
                             mapperName,
                             beatmapsetTitle,
                             actorUsername,
+                            actorColor,
                             rulesets));
                     }
                 }
@@ -365,6 +376,7 @@ public static class DatabaseSchemaUpdater
                     mapper_name = @mapper_name,
                     beatmapset_title = @beatmapset_title,
                     actor_username = @actor_username,
+                    actor_color = @actor_color,
                     rulesets = @rulesets
                 WHERE event_id = @event_id;
                 """;
@@ -375,6 +387,7 @@ public static class DatabaseSchemaUpdater
             var mapperNameParameter = AddParameter(update, "@mapper_name", DbType.String);
             var beatmapsetTitleParameter = AddParameter(update, "@beatmapset_title", DbType.String);
             var actorUsernameParameter = AddParameter(update, "@actor_username", DbType.String);
+            var actorColorParameter = AddParameter(update, "@actor_color", DbType.String);
             var rulesetsParameter = AddParameter(update, "@rulesets", DbType.String);
             var eventIdParameter = AddParameter(update, "@event_id", DbType.Int64);
 
@@ -386,6 +399,7 @@ public static class DatabaseSchemaUpdater
                 mapperNameParameter.Value = ToDbValue(row.MapperName);
                 beatmapsetTitleParameter.Value = ToDbValue(row.BeatmapsetTitle);
                 actorUsernameParameter.Value = ToDbValue(row.ActorUsername);
+                actorColorParameter.Value = ToDbValue(row.ActorColor);
                 rulesetsParameter.Value = ToDbValue(row.Rulesets);
                 eventIdParameter.Value = row.EventId;
 
@@ -405,7 +419,7 @@ public static class DatabaseSchemaUpdater
             await using (var select = connection.CreateCommand())
             {
                 select.CommandText = """
-                    SELECT event_id, raw_event, user_name, actor_avatar_url, actor_badge, created_at, group_name, playmodes
+                    SELECT event_id, raw_event, user_name, actor_avatar_url, actor_badge, actor_color, created_at, group_name, group_color, playmodes
                     FROM group_events
                     WHERE raw_event IS NOT NULL
                       AND raw_event <> '{}'
@@ -413,8 +427,10 @@ public static class DatabaseSchemaUpdater
                         user_name IS NULL OR TRIM(user_name) = '' OR
                         actor_avatar_url IS NULL OR TRIM(actor_avatar_url) = '' OR
                         actor_badge IS NULL OR TRIM(actor_badge) = '' OR
+                        actor_color IS NULL OR TRIM(actor_color) = '' OR
                         created_at IS NULL OR
                         group_name IS NULL OR TRIM(group_name) = '' OR
+                        group_color IS NULL OR TRIM(group_color) = '' OR
                         playmodes IS NULL OR TRIM(playmodes) = ''
                       );
                     """;
@@ -430,9 +446,11 @@ public static class DatabaseSchemaUpdater
                     var existingUserName = ReadNullableString(reader, 2);
                     var existingActorAvatarUrl = ReadNullableString(reader, 3);
                     var existingActorBadge = ReadNullableString(reader, 4);
-                    var existingCreatedAt = ReadNullableString(reader, 5);
-                    var existingGroupName = ReadNullableString(reader, 6);
-                    var existingPlaymodes = ReadNullableString(reader, 7);
+                    var existingActorColor = ReadNullableString(reader, 5);
+                    var existingCreatedAt = ReadNullableString(reader, 6);
+                    var existingGroupName = ReadNullableString(reader, 7);
+                    var existingGroupColor = ReadNullableString(reader, 8);
+                    var existingPlaymodes = ReadNullableString(reader, 9);
 
                     var root = TryParseRawObject(rawEvent);
                     if (root is null)
@@ -450,6 +468,10 @@ public static class DatabaseSchemaUpdater
                     if (string.IsNullOrWhiteSpace(actorBadge))
                         actorBadge = root.TryGetNestedString("user", "title");
 
+                    var actorColor = existingActorColor;
+                    if (string.IsNullOrWhiteSpace(actorColor))
+                        actorColor = TryExtractActorColor(root);
+
                     var createdAt = existingCreatedAt;
                     if (string.IsNullOrWhiteSpace(createdAt))
                     {
@@ -466,6 +488,10 @@ public static class DatabaseSchemaUpdater
                             ?? root.TryGetNestedString("group", "name");
                     }
 
+                    var groupColor = existingGroupColor;
+                    if (string.IsNullOrWhiteSpace(groupColor))
+                        groupColor = TryExtractGroupColor(root);
+
                     var playmodes = existingPlaymodes;
                     if (string.IsNullOrWhiteSpace(playmodes))
                         playmodes = TryExtractGroupPlaymodes(root);
@@ -473,8 +499,10 @@ public static class DatabaseSchemaUpdater
                     if (!string.Equals(existingUserName, userName, StringComparison.Ordinal) ||
                         !string.Equals(existingActorAvatarUrl, actorAvatarUrl, StringComparison.Ordinal) ||
                         !string.Equals(existingActorBadge, actorBadge, StringComparison.Ordinal) ||
+                        !string.Equals(existingActorColor, actorColor, StringComparison.Ordinal) ||
                         !string.Equals(existingCreatedAt, createdAt, StringComparison.Ordinal) ||
                         !string.Equals(existingGroupName, groupName, StringComparison.Ordinal) ||
+                        !string.Equals(existingGroupColor, groupColor, StringComparison.Ordinal) ||
                         !string.Equals(existingPlaymodes, playmodes, StringComparison.Ordinal))
                     {
                         updates.Add(new GroupEventBackfillUpdate(
@@ -482,8 +510,10 @@ public static class DatabaseSchemaUpdater
                             userName,
                             actorAvatarUrl,
                             actorBadge,
+                            actorColor,
                             createdAt,
                             groupName,
+                            groupColor,
                             playmodes));
                     }
                 }
@@ -498,8 +528,10 @@ public static class DatabaseSchemaUpdater
                 SET user_name = @user_name,
                     actor_avatar_url = @actor_avatar_url,
                     actor_badge = @actor_badge,
+                    actor_color = @actor_color,
                     created_at = @created_at,
                     group_name = @group_name,
+                    group_color = @group_color,
                     playmodes = @playmodes
                 WHERE event_id = @event_id;
                 """;
@@ -507,8 +539,10 @@ public static class DatabaseSchemaUpdater
             var userNameParameter = AddParameter(update, "@user_name", DbType.String);
             var actorAvatarUrlParameter = AddParameter(update, "@actor_avatar_url", DbType.String);
             var actorBadgeParameter = AddParameter(update, "@actor_badge", DbType.String);
+            var actorColorParameter = AddParameter(update, "@actor_color", DbType.String);
             var createdAtParameter = AddParameter(update, "@created_at", DbType.String);
             var groupNameParameter = AddParameter(update, "@group_name", DbType.String);
+            var groupColorParameter = AddParameter(update, "@group_color", DbType.String);
             var playmodesParameter = AddParameter(update, "@playmodes", DbType.String);
             var eventIdParameter = AddParameter(update, "@event_id", DbType.Int64);
 
@@ -517,8 +551,10 @@ public static class DatabaseSchemaUpdater
                 userNameParameter.Value = ToDbValue(row.UserName);
                 actorAvatarUrlParameter.Value = ToDbValue(row.ActorAvatarUrl);
                 actorBadgeParameter.Value = ToDbValue(row.ActorBadge);
+                actorColorParameter.Value = ToDbValue(row.ActorColor);
                 createdAtParameter.Value = ToDbValue(row.CreatedAt);
                 groupNameParameter.Value = ToDbValue(row.GroupName);
+                groupColorParameter.Value = ToDbValue(row.GroupColor);
                 playmodesParameter.Value = ToDbValue(row.Playmodes);
                 eventIdParameter.Value = row.EventId;
 
@@ -602,6 +638,7 @@ public static class DatabaseSchemaUpdater
                 (x.ActorUsername == null || x.ActorUsername == "" ||
                  x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
                  x.ActorBadge == null || x.ActorBadge == "" ||
+                 x.ActorColor == null || x.ActorColor == "" ||
                  x.ActorBadge == "PROBATION"))
             .Select(x => x.TriggeredBy!.Value)
             .Distinct()
@@ -643,6 +680,7 @@ public static class DatabaseSchemaUpdater
                     (x.ActorUsername == null || x.ActorUsername == "" ||
                      x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
                      x.ActorBadge == null || x.ActorBadge == "" ||
+                     x.ActorColor == null || x.ActorColor == "" ||
                      x.ActorBadge == "PROBATION"))
                 .ToListAsync(cancellationToken);
 
@@ -668,6 +706,12 @@ public static class DatabaseSchemaUpdater
                     row.ActorBadge = profile.Badge;
                     changed = true;
                 }
+
+                if (string.IsNullOrWhiteSpace(row.ActorColor) && !string.IsNullOrWhiteSpace(profile?.Color))
+                {
+                    row.ActorColor = profile.Color;
+                    changed = true;
+                }
             }
 
             if (changed)
@@ -689,7 +733,8 @@ public static class DatabaseSchemaUpdater
                     (x.Message == null || x.Message == "") &&
                     (x.EventType == FeedEventType.Nomination ||
                      x.EventType == FeedEventType.Qualification ||
-                     x.EventType == FeedEventType.Disqualification))
+                     x.EventType == FeedEventType.Disqualification ||
+                     x.EventType == FeedEventType.NominationReset))
                 .OrderBy(x => x.EventId)
                 .Take(context.BatchSize)
                 .ToListAsync(cancellationToken);
@@ -728,13 +773,16 @@ public static class DatabaseSchemaUpdater
                 (x.RankedHistoryJson == null ||
                  x.RankedHistoryJson == "" ||
                  x.RankedHistoryJson.Contains("\"userId\":null") ||
-                 x.RankedHistoryJson.Contains("\"username\":null")))
+                 x.RankedHistoryJson.Contains("\"username\":null") ||
+                 x.RankedHistoryJson.Contains("\"userColor\":null") ||
+                 !x.RankedHistoryJson.Contains("\"userColor\"")))
             .Select(x => x.SetId)
             .Distinct()
             .OrderBy(x => x)
             .ToListAsync(cancellationToken);
 
         var userNameCache = new Dictionary<long, string?>();
+        var userProfileCache = new Dictionary<long, OsuUserProfileInfo?>();
 
         foreach (var setId in setIds)
         {
@@ -757,7 +805,9 @@ public static class DatabaseSchemaUpdater
                     (x.RankedHistoryJson == null ||
                      x.RankedHistoryJson == "" ||
                      x.RankedHistoryJson.Contains("\"userId\":null") ||
-                     x.RankedHistoryJson.Contains("\"username\":null")))
+                     x.RankedHistoryJson.Contains("\"username\":null") ||
+                     x.RankedHistoryJson.Contains("\"userColor\":null") ||
+                     !x.RankedHistoryJson.Contains("\"userColor\"")))
                 .OrderBy(x => x.EventId)
                 .ToListAsync(cancellationToken);
 
@@ -768,6 +818,7 @@ public static class DatabaseSchemaUpdater
                     row.EventId,
                     completeHistory,
                     context,
+                    userProfileCache,
                     userNameCache,
                     cancellationToken);
 
@@ -797,6 +848,7 @@ public static class DatabaseSchemaUpdater
                 x.UserName == null || x.UserName == "" ||
                 x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
                 x.ActorBadge == null || x.ActorBadge == "" ||
+                x.ActorColor == null || x.ActorColor == "" ||
                 x.ActorBadge == "PROBATION")
             .Select(x => x.UserId)
             .Distinct()
@@ -838,6 +890,7 @@ public static class DatabaseSchemaUpdater
                     (x.UserName == null || x.UserName == "" ||
                      x.ActorAvatarUrl == null || x.ActorAvatarUrl == "" ||
                      x.ActorBadge == null || x.ActorBadge == "" ||
+                     x.ActorColor == null || x.ActorColor == "" ||
                      x.ActorBadge == "PROBATION"))
                 .ToListAsync(cancellationToken);
 
@@ -863,6 +916,12 @@ public static class DatabaseSchemaUpdater
                     row.ActorBadge = profile.Badge;
                     changed = true;
                 }
+
+                if (string.IsNullOrWhiteSpace(row.ActorColor) && !string.IsNullOrWhiteSpace(profile?.Color))
+                {
+                    row.ActorColor = profile.Color;
+                    changed = true;
+                }
             }
 
             if (changed)
@@ -870,13 +929,15 @@ public static class DatabaseSchemaUpdater
         }
     }
 
-    private static async Task BackfillGroupNamesFromApiAsync(
+    private static async Task BackfillGroupMetadataFromApiAsync(
         MappingFeedDbContext db,
         ApiBackfillContext context,
         CancellationToken cancellationToken)
     {
         var groupIds = await db.GroupEvents.AsNoTracking()
-            .Where(x => x.GroupName == null || x.GroupName == "")
+            .Where(x =>
+                x.GroupName == null || x.GroupName == "" ||
+                x.GroupColor == null || x.GroupColor == "")
             .Select(x => x.GroupId)
             .Distinct()
             .OrderBy(x => x)
@@ -884,11 +945,11 @@ public static class DatabaseSchemaUpdater
 
         foreach (var groupId in groupIds)
         {
-            string? groupName;
+            OsuGroupInfo? groupInfo;
             try
             {
-                groupName = await context.InvokeAsync(
-                    (api, ct) => api.GetGroupNameAsync(groupId, ct),
+                groupInfo = await context.InvokeAsync(
+                    (api, ct) => api.GetGroupInfoAsync(groupId, ct),
                     cancellationToken);
             }
             catch
@@ -896,20 +957,40 @@ public static class DatabaseSchemaUpdater
                 continue;
             }
 
-            if (string.IsNullOrWhiteSpace(groupName))
+            var resolvedGroupName = FirstNonEmpty(groupInfo?.Name);
+            var resolvedGroupColor = NormalizeColor(groupInfo?.Color);
+
+            if (string.IsNullOrWhiteSpace(resolvedGroupName) && string.IsNullOrWhiteSpace(resolvedGroupColor))
                 continue;
 
             var rows = await db.GroupEvents
-                .Where(x => x.GroupId == groupId && (x.GroupName == null || x.GroupName == ""))
+                .Where(x =>
+                    x.GroupId == groupId &&
+                    (x.GroupName == null || x.GroupName == "" ||
+                     x.GroupColor == null || x.GroupColor == ""))
                 .ToListAsync(cancellationToken);
 
             if (rows.Count == 0)
                 continue;
 
+            var changed = false;
             foreach (var row in rows)
-                row.GroupName = groupName;
+            {
+                if (string.IsNullOrWhiteSpace(row.GroupName) && !string.IsNullOrWhiteSpace(resolvedGroupName))
+                {
+                    row.GroupName = resolvedGroupName;
+                    changed = true;
+                }
 
-            await db.SaveChangesAsync(cancellationToken);
+                if (string.IsNullOrWhiteSpace(row.GroupColor) && !string.IsNullOrWhiteSpace(resolvedGroupColor))
+                {
+                    row.GroupColor = resolvedGroupColor;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                await db.SaveChangesAsync(cancellationToken);
         }
     }
 
@@ -936,7 +1017,7 @@ public static class DatabaseSchemaUpdater
                     return praiseOrHypeMessage;
             }
 
-            if (beatmapsetEvent.EventType == FeedEventType.Disqualification)
+            if (beatmapsetEvent.EventType is FeedEventType.Disqualification or FeedEventType.NominationReset)
             {
                 var discussionMessageByUser = await context.InvokeAsync(
                     (api, ct) => api.GetLatestDiscussionMessageByUserAsync(
@@ -969,7 +1050,7 @@ public static class DatabaseSchemaUpdater
 
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))
@@ -990,6 +1071,7 @@ public static class DatabaseSchemaUpdater
         long eventId,
         IReadOnlyList<OsuBeatmapsetEventsEvent> completeHistory,
         ApiBackfillContext context,
+        Dictionary<long, OsuUserProfileInfo?> userProfileCache,
         Dictionary<long, string?> userNameCache,
         CancellationToken cancellationToken)
     {
@@ -1037,14 +1119,31 @@ public static class DatabaseSchemaUpdater
         foreach (var historyEvent in trimmedHistory)
         {
             string? userName = null;
+            string? userColor = null;
             if (historyEvent.UserId is not null)
             {
                 var userId = historyEvent.UserId.Value;
+
+                if (!userProfileCache.TryGetValue(userId, out var profile))
+                {
+                    profile = await context.InvokeAsync(
+                        (api, ct) => api.GetUserProfileAsync(userId, ct),
+                        cancellationToken);
+                    userProfileCache[userId] = profile;
+                }
+
+                userColor = profile?.Color;
+
                 if (!userNameCache.TryGetValue(userId, out userName))
                 {
-                    userName = await context.InvokeAsync(
-                        (api, ct) => api.GetUserNameAsync(userId, ct),
-                        cancellationToken);
+                    userName = FirstNonEmpty(profile?.Username);
+                    if (string.IsNullOrWhiteSpace(userName))
+                    {
+                        userName = await context.InvokeAsync(
+                            (api, ct) => api.GetUserNameAsync(userId, ct),
+                            cancellationToken);
+                    }
+
                     userNameCache[userId] = userName;
                 }
             }
@@ -1052,7 +1151,8 @@ public static class DatabaseSchemaUpdater
             actions.Add(new RankedHistorySnapshot(
                 historyEvent.Type,
                 historyEvent.UserId,
-                string.IsNullOrWhiteSpace(userName) ? null : userName));
+                string.IsNullOrWhiteSpace(userName) ? null : userName,
+                FirstNonEmpty(userColor)));
         }
 
         return actions;
@@ -1258,6 +1358,56 @@ public static class DatabaseSchemaUpdater
             : string.Join(", ", modes.Distinct());
     }
 
+    private static string? TryExtractGroupColor(JsonObject root)
+    {
+        var rawColor = root.TryGetString("group_color", "group_colour")
+            ?? root.TryGetNestedString("group", "color")
+            ?? root.TryGetNestedString("group", "colour");
+
+        return NormalizeColor(rawColor);
+    }
+
+    private static string? TryExtractActorColor(JsonObject root)
+    {
+        var rawColor = root.TryGetString("user_color", "user_colour")
+            ?? root.TryGetNestedString("user", "color")
+            ?? root.TryGetNestedString("user", "colour");
+
+        var normalized = NormalizeColor(rawColor);
+        if (!string.IsNullOrWhiteSpace(normalized))
+            return normalized;
+
+        if (root["user"]?["groups"] is not JsonArray groups)
+            return null;
+
+        foreach (var group in groups.OfType<JsonObject>())
+        {
+            var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+            if (!string.IsNullOrWhiteSpace(groupColor))
+                return groupColor;
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeColor(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith('#'))
+            trimmed = trimmed[1..];
+
+        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
+            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
+
+        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
+            return null;
+
+        return $"#{trimmed.ToUpperInvariant()}";
+    }
+
     private static string? ReadNullableString(DbDataReader reader, int ordinal)
     {
         return reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal)?.ToString();
@@ -1350,6 +1500,7 @@ public static class DatabaseSchemaUpdater
         string? MapperName,
         string? BeatmapsetTitle,
         string? ActorUsername,
+        string? ActorColor,
         string? Rulesets);
 
     private sealed record GroupEventBackfillUpdate(
@@ -1357,14 +1508,17 @@ public static class DatabaseSchemaUpdater
         string? UserName,
         string? ActorAvatarUrl,
         string? ActorBadge,
+        string? ActorColor,
         string? CreatedAt,
         string? GroupName,
+        string? GroupColor,
         string? Playmodes);
 
     private sealed record RankedHistorySnapshot(
         FeedEventType Action,
         long? UserId,
-        string? Username);
+        string? Username,
+        string? UserColor);
 
     private sealed record RankedHistoryEvent(OsuBeatmapsetEventsEvent Event, FeedEventType Type);
 

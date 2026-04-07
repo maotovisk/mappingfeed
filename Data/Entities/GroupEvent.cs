@@ -12,6 +12,8 @@ public sealed class GroupEvent
 
     public string? ActorBadge { get; set; }
 
+    public string? ActorColor { get; set; }
+
     public DateTimeOffset? CreatedAt { get; set; }
 
     public FeedEventType EventType { get; set; }
@@ -19,6 +21,8 @@ public sealed class GroupEvent
     public long GroupId { get; set; }
 
     public string? GroupName { get; set; }
+
+    public string? GroupColor { get; set; }
 
     public string? Playmodes { get; set; }
 

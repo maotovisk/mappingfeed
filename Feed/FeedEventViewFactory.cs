@@ -34,12 +34,15 @@ public sealed class FeedEventViewFactory
         var createdAt = beatmapsetEvent.CreatedAt ?? TryGetCreatedAt(beatmapsetEvent.RawEvent);
         var beatmapsetUrl = $"https://osu.ppy.sh/beatmapsets/{beatmapsetEvent.SetId}";
         var actorName = FirstNonEmpty(beatmapsetEvent.ActorUsername);
-        var actor = HasActorData(beatmapsetEvent.TriggeredBy, actorName, beatmapsetEvent.ActorAvatarUrl, beatmapsetEvent.ActorBadge)
+        var actorColor = FirstNonEmpty(beatmapsetEvent.ActorColor)
+            ?? TryGetActorColor(beatmapsetEvent.RawEvent);
+        var actor = HasActorData(beatmapsetEvent.TriggeredBy, actorName, beatmapsetEvent.ActorAvatarUrl, beatmapsetEvent.ActorBadge, actorColor)
             ? new FeedEventActor(
                 beatmapsetEvent.TriggeredBy,
                 actorName,
                 beatmapsetEvent.ActorAvatarUrl,
-                beatmapsetEvent.ActorBadge)
+                beatmapsetEvent.ActorBadge,
+                actorColor)
             : null;
 
         var mapTitle = FirstNonEmpty(beatmapsetEvent.BeatmapsetTitle) ?? $"Beatmapset {beatmapsetEvent.SetId}";
@@ -74,6 +77,8 @@ public sealed class FeedEventViewFactory
         var groupName = FirstNonEmpty(groupEvent.GroupName)
             ?? TryGetGroupName(groupEvent.RawEvent)
             ?? $"Group {groupEvent.GroupId}";
+        var groupColor = FirstNonEmpty(groupEvent.GroupColor)
+            ?? TryGetGroupColor(groupEvent.RawEvent);
 
         var playmodes = ParsePlaymodes(groupEvent.Playmodes);
         if (playmodes.Count == 0)
@@ -82,6 +87,8 @@ public sealed class FeedEventViewFactory
         var createdAt = groupEvent.CreatedAt ?? TryGetCreatedAt(groupEvent.RawEvent);
         var userUrl = $"https://osu.ppy.sh/users/{groupEvent.UserId}";
         var groupUrl = $"https://osu.ppy.sh/groups/{groupEvent.GroupId}";
+        var actorColor = FirstNonEmpty(groupEvent.ActorColor)
+            ?? TryGetActorColor(groupEvent.RawEvent);
 
         return new FeedEventViewEntry(
             groupEvent.EventId,
@@ -93,13 +100,15 @@ public sealed class FeedEventViewFactory
                 groupEvent.UserId,
                 userName,
                 groupEvent.ActorAvatarUrl,
-                groupEvent.ActorBadge),
+                groupEvent.ActorBadge,
+                actorColor),
             null,
             new FeedGroupEventViewData(
                 groupEvent.UserId,
                 userName,
                 groupEvent.GroupId,
                 groupName,
+                groupColor,
                 playmodes,
                 userUrl,
                 groupUrl));
@@ -138,7 +147,8 @@ public sealed class FeedEventViewFactory
                 .Select(x => new FeedMapHistoryAction(
                     x.Action,
                     x.UserId,
-                    string.IsNullOrWhiteSpace(x.Username) ? null : x.Username))
+                    string.IsNullOrWhiteSpace(x.Username) ? null : x.Username,
+                    FirstNonEmpty(x.UserColor)))
                 .ToList();
         }
         catch
@@ -207,7 +217,7 @@ public sealed class FeedEventViewFactory
 
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))
@@ -300,6 +310,54 @@ public sealed class FeedEventViewFactory
         }
     }
 
+    private static string? TryGetGroupColor(string rawEvent)
+    {
+        try
+        {
+            var root = JsonNode.Parse(rawEvent) as JsonObject;
+            var rawColor = root?.TryGetString("group_color", "group_colour")
+                ?? root?.TryGetNestedString("group", "color")
+                ?? root?.TryGetNestedString("group", "colour");
+
+            return NormalizeColor(rawColor);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryGetActorColor(string rawEvent)
+    {
+        try
+        {
+            var root = JsonNode.Parse(rawEvent) as JsonObject;
+            var rawColor = root?.TryGetString("user_color", "user_colour")
+                ?? root?.TryGetNestedString("user", "color")
+                ?? root?.TryGetNestedString("user", "colour");
+
+            var normalized = NormalizeColor(rawColor);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                return normalized;
+
+            if (root?["user"]?["groups"] is not JsonArray groups)
+                return null;
+
+            foreach (var group in groups.OfType<JsonObject>())
+            {
+                var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+                if (!string.IsNullOrWhiteSpace(groupColor))
+                    return groupColor;
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static List<string> TryGetGroupPlaymodes(string rawEvent)
     {
         try
@@ -336,17 +394,36 @@ public sealed class FeedEventViewFactory
         }
     }
 
-    private static bool HasActorData(long? userId, string? username, string? avatarUrl, string? badge)
+    private static bool HasActorData(long? userId, string? username, string? avatarUrl, string? badge, string? color)
     {
         return userId is not null ||
                !string.IsNullOrWhiteSpace(username) ||
                !string.IsNullOrWhiteSpace(avatarUrl) ||
-               !string.IsNullOrWhiteSpace(badge);
+               !string.IsNullOrWhiteSpace(badge) ||
+               !string.IsNullOrWhiteSpace(color);
     }
 
     private static string? FirstNonEmpty(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static string? NormalizeColor(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith('#'))
+            trimmed = trimmed[1..];
+
+        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
+            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
+
+        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
+            return null;
+
+        return $"#{trimmed.ToUpperInvariant()}";
     }
 
     private static string Trim(string value, int maxLength)
@@ -360,5 +437,6 @@ public sealed class FeedEventViewFactory
     private sealed record RankedHistorySnapshot(
         FeedEventType Action,
         long? UserId,
-        string? Username);
+        string? Username,
+        string? UserColor);
 }

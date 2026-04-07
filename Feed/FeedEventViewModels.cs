@@ -4,12 +4,14 @@ public sealed record FeedEventActor(
     long? UserId,
     string? Username,
     string? AvatarUrl,
-    string? Badge);
+    string? Badge,
+    string? Color);
 
 public sealed record FeedMapHistoryAction(
     FeedEventType Action,
     long? UserId,
-    string? Username);
+    string? Username,
+    string? UserColor);
 
 public sealed record FeedMapEventViewData(
     long SetId,
@@ -26,6 +28,7 @@ public sealed record FeedGroupEventViewData(
     string UserName,
     long GroupId,
     string GroupName,
+    string? GroupColor,
     IReadOnlyList<string> Playmodes,
     string UserUrl,
     string GroupUrl);

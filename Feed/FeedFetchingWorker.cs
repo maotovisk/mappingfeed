@@ -175,6 +175,8 @@ public sealed class FeedFetchingWorker(
                     ?? FirstNonEmpty(profile?.AvatarUrl);
                 parsedEvent.ActorBadge = FirstNonEmpty(parsedEvent.ActorBadge)
                     ?? FirstNonEmpty(profile?.Badge);
+                parsedEvent.ActorColor = FirstNonEmpty(parsedEvent.ActorColor)
+                    ?? FirstNonEmpty(profile?.Color);
             }
 
             if (parsedEvent.EventType != FeedEventType.Ranked)
@@ -192,6 +194,7 @@ public sealed class FeedFetchingWorker(
             var rankedHistory = await BuildRankedHistorySnapshotAsync(
                 parsedEvent.EventId,
                 completeHistory,
+                profileCache,
                 userNameCache,
                 cancellationToken);
 
@@ -207,6 +210,7 @@ public sealed class FeedFetchingWorker(
     {
         var profileCache = new Dictionary<long, OsuUserProfileInfo?>();
         var groupNameCache = new Dictionary<long, string?>();
+        var groupColorCache = new Dictionary<long, string?>();
 
         foreach (var parsedEvent in parsedEvents.OrderBy(x => x.EventId))
         {
@@ -224,6 +228,8 @@ public sealed class FeedFetchingWorker(
                 ?? FirstNonEmpty(profile?.AvatarUrl);
             parsedEvent.ActorBadge = FirstNonEmpty(parsedEvent.ActorBadge)
                 ?? FirstNonEmpty(profile?.Badge);
+            parsedEvent.ActorColor = FirstNonEmpty(parsedEvent.ActorColor)
+                ?? FirstNonEmpty(profile?.Color);
 
             if (!groupNameCache.TryGetValue(parsedEvent.GroupId, out var groupName))
             {
@@ -231,9 +237,17 @@ public sealed class FeedFetchingWorker(
                 groupNameCache[parsedEvent.GroupId] = groupName;
             }
 
+            if (!groupColorCache.TryGetValue(parsedEvent.GroupId, out var groupColor))
+            {
+                groupColor = await osuApiClient.GetGroupColorAsync(parsedEvent.GroupId, cancellationToken);
+                groupColorCache[parsedEvent.GroupId] = groupColor;
+            }
+
             parsedEvent.GroupName = FirstNonEmpty(parsedEvent.GroupName)
                 ?? FirstNonEmpty(groupName)
                 ?? $"Group {parsedEvent.GroupId}";
+            parsedEvent.GroupColor = FirstNonEmpty(parsedEvent.GroupColor)
+                ?? FirstNonEmpty(groupColor);
         }
     }
 
@@ -261,7 +275,7 @@ public sealed class FeedFetchingWorker(
                     return praiseOrHypeMessage;
             }
 
-            if (parsedEvent.EventType == FeedEventType.Disqualification)
+            if (parsedEvent.EventType is FeedEventType.Disqualification or FeedEventType.NominationReset)
             {
                 var discussionMessageByUser = await osuApiClient.GetLatestDiscussionMessageByUserAsync(
                     parsedEvent.SetId,
@@ -318,6 +332,7 @@ public sealed class FeedFetchingWorker(
     private async Task<IReadOnlyList<RankedHistorySnapshot>> BuildRankedHistorySnapshotAsync(
         long eventId,
         IReadOnlyList<OsuBeatmapsetEventsEvent> completeHistory,
+        Dictionary<long, OsuUserProfileInfo?> userProfileCache,
         Dictionary<long, string?> userNameCache,
         CancellationToken cancellationToken)
     {
@@ -365,12 +380,22 @@ public sealed class FeedFetchingWorker(
         foreach (var historyEvent in trimmedHistory)
         {
             string? userName = null;
+            string? userColor = null;
             if (historyEvent.UserId is not null)
             {
                 var userId = historyEvent.UserId.Value;
+                if (!userProfileCache.TryGetValue(userId, out var profile))
+                {
+                    profile = await osuApiClient.GetUserProfileAsync(userId, cancellationToken);
+                    userProfileCache[userId] = profile;
+                }
+
+                userColor = profile?.Color;
+
                 if (!userNameCache.TryGetValue(userId, out userName))
                 {
-                    userName = await osuApiClient.GetUserNameAsync(userId, cancellationToken);
+                    userName = FirstNonEmpty(profile?.Username)
+                        ?? await osuApiClient.GetUserNameAsync(userId, cancellationToken);
                     userNameCache[userId] = userName;
                 }
             }
@@ -378,7 +403,8 @@ public sealed class FeedFetchingWorker(
             actions.Add(new RankedHistorySnapshot(
                 historyEvent.Type,
                 historyEvent.UserId,
-                string.IsNullOrWhiteSpace(userName) ? null : userName));
+                string.IsNullOrWhiteSpace(userName) ? null : userName,
+                FirstNonEmpty(userColor)));
         }
 
         return actions;
@@ -595,6 +621,7 @@ public sealed class FeedFetchingWorker(
             MapperName = TryGetMapperName(payload.RawJson),
             BeatmapsetTitle = TryGetBeatmapsetTitle(payload.RawJson),
             ActorUsername = TryGetActorUsername(payload.RawJson),
+            ActorColor = TryGetActorColor(payload.RawJson),
             Rulesets = TrySerializeRulesets(payload.RawJson),
             RawEvent = payload.RawJson,
             EventId = payload.Id,
@@ -619,11 +646,13 @@ public sealed class FeedFetchingWorker(
             UserName = payload.TryGetString("user_name") ?? payload.TryGetNestedString("user", "username"),
             ActorAvatarUrl = payload.TryGetNestedString("user", "avatar_url"),
             ActorBadge = payload.TryGetNestedString("user", "title"),
+            ActorColor = TryExtractActorColor(payload),
             CreatedAt = TryParseCreatedAt(payload.TryGetString("created_at")),
             GroupId = groupId.Value,
             GroupName = payload.TryGetString("group_name")
                 ?? payload.TryGetNestedString("group", "short_name")
                 ?? payload.TryGetNestedString("group", "name"),
+            GroupColor = TryExtractGroupColor(payload),
             Playmodes = TryExtractGroupPlaymodes(payload),
             EventType = eventType.Value,
             RawEvent = payload.ToJsonString(JsonOptions),
@@ -711,6 +740,19 @@ public sealed class FeedFetchingWorker(
         }
     }
 
+    private static string? TryGetActorColor(string rawEvent)
+    {
+        try
+        {
+            var root = JsonNode.Parse(rawEvent) as JsonObject;
+            return root is null ? null : TryExtractActorColor(root);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static string? TrySerializeRulesets(string rawEvent)
     {
         return FeedEnumExtensions.SerializeRulesets(FeedEnumExtensions.ExtractRulesets(rawEvent));
@@ -749,9 +791,60 @@ public sealed class FeedFetchingWorker(
             : string.Join(", ", normalized.Distinct());
     }
 
+    private static string? TryExtractGroupColor(JsonObject payload)
+    {
+        var rawColor = payload.TryGetString("group_color", "group_colour")
+            ?? payload.TryGetNestedString("group", "color")
+            ?? payload.TryGetNestedString("group", "colour");
+
+        return NormalizeColor(rawColor);
+    }
+
+    private static string? TryExtractActorColor(JsonObject payload)
+    {
+        var rawColor = payload.TryGetString("user_color", "user_colour")
+            ?? payload.TryGetNestedString("user", "color")
+            ?? payload.TryGetNestedString("user", "colour");
+
+        var normalized = NormalizeColor(rawColor);
+        if (!string.IsNullOrWhiteSpace(normalized))
+            return normalized;
+
+        var user = payload["user"] as JsonObject;
+        if (user?["groups"] is not JsonArray groups)
+            return null;
+
+        foreach (var group in groups.OfType<JsonObject>())
+        {
+            var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+            if (!string.IsNullOrWhiteSpace(groupColor))
+                return groupColor;
+        }
+
+        return null;
+    }
+
+    private static string? NormalizeColor(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith('#'))
+            trimmed = trimmed[1..];
+
+        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
+            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
+
+        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
+            return null;
+
+        return $"#{trimmed.ToUpperInvariant()}";
+    }
+
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))
@@ -782,7 +875,8 @@ public sealed class FeedFetchingWorker(
     private sealed record RankedHistorySnapshot(
         FeedEventType Action,
         long? UserId,
-        string? Username);
+        string? Username,
+        string? UserColor);
 
     private sealed record RankedHistoryEvent(OsuBeatmapsetEventsEvent Event, FeedEventType Type);
 

@@ -20,6 +20,8 @@ public sealed class BeatmapsetEvent
 
     public string? ActorBadge { get; set; }
 
+    public string? ActorColor { get; set; }
+
     public long? DiscussionId { get; set; }
 
     public long? PostId { get; set; }

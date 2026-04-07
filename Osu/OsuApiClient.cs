@@ -91,9 +91,19 @@ public sealed class OsuApiClient(
         {
             var groupId = group.TryGetInt64("id");
             var groupName = group.TryGetString("short_name", "name");
+            var groupColor = NormalizeColor(group.TryGetString("colour", "color"));
 
-            if (groupId is not null && !string.IsNullOrWhiteSpace(groupName))
-                memoryCache.Set($"group:{groupId.Value}", groupName, _cacheDuration);
+            if (groupId is not null)
+            {
+                if (!string.IsNullOrWhiteSpace(groupName))
+                    memoryCache.Set($"group:{groupId.Value}", groupName, _cacheDuration);
+
+                if (!string.IsNullOrWhiteSpace(groupColor))
+                    memoryCache.Set($"group_color:{groupId.Value}", groupColor, _cacheDuration);
+
+                if (!string.IsNullOrWhiteSpace(groupName) || !string.IsNullOrWhiteSpace(groupColor))
+                    memoryCache.Set($"group_info:{groupId.Value}", new OsuGroupInfo(groupName, groupColor), _cacheDuration);
+            }
         }
 
         var events = ExtractEvents(root, "events");
@@ -149,21 +159,52 @@ public sealed class OsuApiClient(
             if (root.Count == 0)
                 return null;
 
-            var badge = ResolveUserBadge(root);
+            var (badge, color) = ResolveUserDecorations(root);
 
             return new OsuUserProfileInfo(
                 root.TryGetString("username"),
                 root.TryGetString("avatar_url"),
-                badge);
+                badge,
+                color);
         }, cancellationToken);
     }
 
-    public Task<string?> GetGroupNameAsync(long groupId, CancellationToken cancellationToken)
+    public async Task<string?> GetGroupNameAsync(long groupId, CancellationToken cancellationToken)
     {
-        return GetCachedAsync($"group:{groupId}", async token =>
+        if (memoryCache.TryGetValue($"group:{groupId}", out string? cachedName) && !string.IsNullOrWhiteSpace(cachedName))
+            return cachedName;
+
+        var groupInfo = await GetGroupInfoAsync(groupId, cancellationToken);
+        return groupInfo?.Name;
+    }
+
+    public async Task<string?> GetGroupColorAsync(long groupId, CancellationToken cancellationToken)
+    {
+        if (memoryCache.TryGetValue($"group_color:{groupId}", out string? cachedColor) && !string.IsNullOrWhiteSpace(cachedColor))
+            return cachedColor;
+
+        var groupInfo = await GetGroupInfoAsync(groupId, cancellationToken);
+        return groupInfo?.Color;
+    }
+
+    public Task<OsuGroupInfo?> GetGroupInfoAsync(long groupId, CancellationToken cancellationToken)
+    {
+        return GetCachedAsync($"group_info:{groupId}", async token =>
         {
             var root = await GetRootAsync($"/api/v2/groups/{groupId}", [], token);
-            return root.TryGetString("name", "short_name");
+            if (root.Count == 0)
+                return null;
+
+            var name = root.TryGetString("name", "short_name");
+            var color = NormalizeColor(root.TryGetString("colour", "color"));
+
+            if (!string.IsNullOrWhiteSpace(name))
+                memoryCache.Set($"group:{groupId}", name, _cacheDuration);
+
+            if (!string.IsNullOrWhiteSpace(color))
+                memoryCache.Set($"group_color:{groupId}", color, _cacheDuration);
+
+            return new OsuGroupInfo(name, color);
         }, cancellationToken);
     }
 
@@ -808,11 +849,31 @@ public sealed class OsuApiClient(
         };
     }
 
-    private static string? ResolveUserBadge(JsonObject root)
+    private static string? NormalizeColor(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith('#'))
+            trimmed = trimmed[1..];
+
+        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
+            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
+
+        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
+            return null;
+
+        return $"#{trimmed.ToUpperInvariant()}";
+    }
+
+    private static (string? Badge, string? Color) ResolveUserDecorations(JsonObject root)
     {
         string? mappedBadge = null;
+        string? mappedColor = null;
         var mappedPriority = int.MaxValue;
         string? fallbackShortName = null;
+        string? fallbackColor = null;
 
         if (root.TryGetArray("groups") is { } groups)
         {
@@ -824,6 +885,10 @@ public sealed class OsuApiClient(
                 {
                     fallbackShortName = shortName.Trim().ToUpperInvariant();
                 }
+
+                var groupColor = NormalizeColor(group.TryGetString("colour", "color"));
+                if (string.IsNullOrWhiteSpace(fallbackColor) && !string.IsNullOrWhiteSpace(groupColor))
+                    fallbackColor = groupColor;
 
                 var groupId = group.TryGetInt64("id");
                 if (groupId is null)
@@ -840,21 +905,27 @@ public sealed class OsuApiClient(
                     continue;
 
                 mappedBadge = badge;
+                mappedColor = groupColor;
                 mappedPriority = priority;
             }
         }
 
         if (!string.IsNullOrWhiteSpace(mappedBadge))
-            return mappedBadge;
+            return (mappedBadge, FirstNonEmpty(mappedColor) ?? fallbackColor);
 
         if (!string.IsNullOrWhiteSpace(fallbackShortName))
-            return fallbackShortName;
+            return (fallbackShortName, fallbackColor);
 
         var defaultGroup = root.TryGetString("default_group");
         if (string.IsNullOrWhiteSpace(defaultGroup) || defaultGroup.Equals("default", StringComparison.OrdinalIgnoreCase))
-            return null;
+            return (null, fallbackColor);
 
-        return defaultGroup.ToUpperInvariant();
+        return (defaultGroup.ToUpperInvariant(), fallbackColor);
+    }
+
+    private static string? FirstNonEmpty(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static IReadOnlyList<JsonObject> ExtractEvents(JsonObject root, params string[] arrayPropertyNames)
@@ -882,4 +953,5 @@ public sealed class OsuApiClient(
 }
 
 public sealed record OsuBeatmapsetInfo(string? Title, string? Creator, string? ThumbnailUrl);
-public sealed record OsuUserProfileInfo(string? Username, string? AvatarUrl, string? Badge);
+public sealed record OsuUserProfileInfo(string? Username, string? AvatarUrl, string? Badge, string? Color);
+public sealed record OsuGroupInfo(string? Name, string? Color);
