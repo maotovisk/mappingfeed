@@ -60,6 +60,7 @@ public sealed class SubscribedFeedRepository(IDbContextFactory<MappingFeedDbCont
         }
         else
         {
+            tracked.LastEventId = subscription.LastEventId;
             tracked.Rulesets = subscription.Rulesets;
             tracked.EventTypes = subscription.EventTypes;
             tracked.GroupId = subscription.GroupId;

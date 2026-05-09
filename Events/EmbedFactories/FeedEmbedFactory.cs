@@ -9,8 +9,6 @@ public sealed partial class FeedEmbedFactory(
     IBeatmapEventService beatmapEventService,
     IGroupEventService groupEventService)
 {
-    private const char ZeroWidthSpace = '\u200B';
-
     public async Task<EmbedProperties> CreateBeatmapsetEventEmbedAsync(
         BeatmapsetEvent beatmapsetEvent,
         CancellationToken cancellationToken)
@@ -223,7 +221,9 @@ public sealed partial class FeedEmbedFactory(
 
     private static string BuildDiscordLink(string text, string url)
     {
-        return $"[{EscapeDiscordLinkLabel(text)}]({url})";
+        return ContainsUnsafeLinkLabelChars(text)
+            ? $"{EscapeDiscordMarkdown(text)} [↗]({url})"
+            : $"[{text}]({url})";
     }
 
     private static string BuildUserDisplayName(string username, long? userId)
@@ -233,24 +233,11 @@ public sealed partial class FeedEmbedFactory(
             : BuildDiscordLink(username, $"https://osu.ppy.sh/users/{userId.Value}");
     }
 
-    private static string EscapeDiscordLinkLabel(string text)
-    {
-        var escaped = LinkLabelSyntaxChars().Replace(text, "\\$0");
-        return LinkLabelFormattingChars().Replace(escaped, match =>
-        {
-            var indexAfterMatch = match.Index + match.Length;
-            return indexAfterMatch < escaped.Length && escaped[indexAfterMatch] == ZeroWidthSpace
-                ? match.Value
-                : $"{match.Value}{ZeroWidthSpace}";
-        });
-    }
+    private static bool ContainsUnsafeLinkLabelChars(string text) => LinkLabelUnsafeChars().IsMatch(text);
 
     [GeneratedRegex(@"(?<!\\)[*_~`\[\]()]")]
     private static partial Regex EscapableChars();
 
-    [GeneratedRegex(@"(?<!\\)[\[\]]")]
-    private static partial Regex LinkLabelSyntaxChars();
-
-    [GeneratedRegex(@"(?<!\\)[*_~`]")]
-    private static partial Regex LinkLabelFormattingChars();
+    [GeneratedRegex(@"(?<!\\)[*_~`\[\]\\]")]
+    private static partial Regex LinkLabelUnsafeChars();
 }

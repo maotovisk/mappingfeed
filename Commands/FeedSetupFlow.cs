@@ -68,6 +68,8 @@ internal sealed class FeedSetupSession(ulong userId, ulong? guildId, long channe
 
     public HashSet<string> GroupIds { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+    public string StartCursor { get; set; } = FeedSetupUi.DefaultStartCursorValue;
+
     public DateTimeOffset UpdatedAt { get; private set; } = DateTimeOffset.UtcNow;
 
     public void Touch()
@@ -82,8 +84,10 @@ internal static class FeedSetupUi
     public const string RulesetMenuCustomId = "setup_feed_rulesets";
     public const string EventTypeMenuCustomId = "setup_feed_event_types";
     public const string GroupMenuCustomId = "setup_feed_groups";
+    public const string StartCursorMenuCustomId = "setup_feed_start_cursor";
     public const string SaveButtonCustomId = "setup_feed_save";
     public const string CancelButtonCustomId = "setup_feed_cancel";
+    public const string DefaultStartCursorValue = "3d";
 
     private static readonly IReadOnlyList<string> RulesetValues = ["osu", "taiko", "catch", "mania"];
 
@@ -114,15 +118,47 @@ internal static class FeedSetupUi
         new("50", "TC", "Tournament Committee"),
     ];
 
+    private static readonly IReadOnlyList<StartCursorChoice> StartCursorChoices =
+    [
+        new("everything", "everything", "Keep the current setup behavior"),
+        new("30d", "last 30 days", "Start from events in the last 30 days"),
+        new("15d", "last 15 days", "Start from events in the last 15 days"),
+        new("7d", "last 7 days", "Start from events in the last 7 days"),
+        new("3d", "last 3 days", "Start from events in the last 3 days"),
+        new("24h", "last 24 hours", "Start from events in the last 24 hours"),
+    ];
+
     private static readonly HashSet<string> RulesetValueSet = new(RulesetValues, StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> EventTypeValueSet = new(EventTypeValues, StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> GroupValueSet = new(GroupChoices.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> StartCursorValueSet = new(StartCursorChoices.Select(x => x.Value), StringComparer.OrdinalIgnoreCase);
 
     public static bool IsValidRuleset(string value) => RulesetValueSet.Contains(value);
 
     public static bool IsValidEventType(string value) => EventTypeValueSet.Contains(value);
 
     public static bool IsValidGroupId(string value) => GroupValueSet.Contains(value);
+
+    public static bool IsValidStartCursor(string value) => StartCursorValueSet.Contains(value);
+
+    public static string FormatStartCursor(string value)
+    {
+        return StartCursorChoices.FirstOrDefault(x => string.Equals(x.Value, value, StringComparison.OrdinalIgnoreCase)).Label
+               ?? StartCursorChoices.First(x => x.Value == DefaultStartCursorValue).Label;
+    }
+
+    public static DateTimeOffset? GetStartCursorSince(string value, DateTimeOffset now)
+    {
+        return value.ToLowerInvariant() switch
+        {
+            "30d" => now - TimeSpan.FromDays(30),
+            "15d" => now - TimeSpan.FromDays(15),
+            "7d" => now - TimeSpan.FromDays(7),
+            "3d" => now - TimeSpan.FromDays(3),
+            "24h" => now - TimeSpan.FromHours(24),
+            _ => null,
+        };
+    }
 
     public static IEnumerable<string> OrderRulesets(IEnumerable<string> selected)
     {
@@ -160,6 +196,7 @@ internal static class FeedSetupUi
         var rulesets = FormatOrderedSelection(OrderRulesets(session.Rulesets));
         var eventTypes = FormatOrderedSelection(OrderEventTypes(session.EventTypes));
         var groups = FormatOrderedSelection(OrderGroupIds(session.GroupIds));
+        var startCursor = FormatStartCursor(session.StartCursor);
 
         var lines = new List<string>();
         if (!string.IsNullOrWhiteSpace(notice))
@@ -167,6 +204,7 @@ internal static class FeedSetupUi
 
         lines.Add("Feed setup:");
         lines.Add($"type: `{selectedType}`");
+        lines.Add($"start from: `{startCursor}`");
         if (session.FeedType == FeedType.Map)
         {
             lines.Add($"rulesets: `{rulesets}`");
@@ -183,18 +221,24 @@ internal static class FeedSetupUi
 
     public static IEnumerable<IMessageComponentProperties> BuildComponents(FeedSetupSession session)
     {
-        var rulesetsDisabled = session.FeedType == FeedType.Group;
-        var eventTypesDisabled = session.FeedType == FeedType.Group;
-        var groupsDisabled = session.FeedType == FeedType.Map;
-
-        return
-        [
+        var components = new List<IMessageComponentProperties>
+        {
             BuildTypeMenu(session),
-            BuildRulesetMenu(session, rulesetsDisabled),
-            BuildEventTypeMenu(session, eventTypesDisabled),
-            BuildGroupMenu(session, groupsDisabled),
-            BuildActionButtons(),
-        ];
+            BuildStartCursorMenu(session),
+        };
+
+        if (session.FeedType == FeedType.Map)
+        {
+            components.Add(BuildRulesetMenu(session));
+            components.Add(BuildEventTypeMenu(session));
+        }
+        else
+        {
+            components.Add(BuildGroupMenu(session));
+        }
+
+        components.Add(BuildActionButtons());
+        return components;
     }
 
     private static StringMenuProperties BuildTypeMenu(FeedSetupSession session)
@@ -214,7 +258,20 @@ internal static class FeedSetupUi
             .WithMaxValues(1);
     }
 
-    private static StringMenuProperties BuildRulesetMenu(FeedSetupSession session, bool disabled)
+    private static StringMenuProperties BuildStartCursorMenu(FeedSetupSession session)
+    {
+        return new StringMenuProperties(
+                StartCursorMenuCustomId,
+                StartCursorChoices.Select(choice =>
+                    new StringMenuSelectOptionProperties(choice.Label, choice.Value)
+                        .WithDescription(choice.Description)
+                        .WithDefault(string.Equals(session.StartCursor, choice.Value, StringComparison.OrdinalIgnoreCase))))
+            .WithPlaceholder("Start from")
+            .WithMinValues(1)
+            .WithMaxValues(1);
+    }
+
+    private static StringMenuProperties BuildRulesetMenu(FeedSetupSession session)
     {
         var selectedSet = new HashSet<string>(session.Rulesets, StringComparer.OrdinalIgnoreCase);
 
@@ -225,11 +282,10 @@ internal static class FeedSetupUi
                         .WithDefault(selectedSet.Contains(value))))
             .WithPlaceholder("Rulesets (map feed only)")
             .WithMinValues(0)
-            .WithMaxValues(RulesetValues.Count)
-            .WithDisabled(disabled);
+            .WithMaxValues(RulesetValues.Count);
     }
 
-    private static StringMenuProperties BuildEventTypeMenu(FeedSetupSession session, bool disabled)
+    private static StringMenuProperties BuildEventTypeMenu(FeedSetupSession session)
     {
         var selectedSet = new HashSet<string>(session.EventTypes, StringComparer.OrdinalIgnoreCase);
 
@@ -240,11 +296,10 @@ internal static class FeedSetupUi
                         .WithDefault(selectedSet.Contains(value))))
             .WithPlaceholder("Event types (map feed only)")
             .WithMinValues(0)
-            .WithMaxValues(EventTypeValues.Count)
-            .WithDisabled(disabled);
+            .WithMaxValues(EventTypeValues.Count);
     }
 
-    private static StringMenuProperties BuildGroupMenu(FeedSetupSession session, bool disabled)
+    private static StringMenuProperties BuildGroupMenu(FeedSetupSession session)
     {
         var selectedSet = new HashSet<string>(session.GroupIds, StringComparer.OrdinalIgnoreCase);
 
@@ -256,8 +311,7 @@ internal static class FeedSetupUi
                         .WithDefault(selectedSet.Contains(choice.Id))))
             .WithPlaceholder("Group IDs (group feed only)")
             .WithMinValues(0)
-            .WithMaxValues(GroupChoices.Count)
-            .WithDisabled(disabled);
+            .WithMaxValues(GroupChoices.Count);
     }
 
     private static ActionRowProperties BuildActionButtons()
@@ -276,6 +330,8 @@ internal static class FeedSetupUi
     }
 
     private readonly record struct GroupChoice(string Id, string Acronym, string Name);
+
+    private readonly record struct StartCursorChoice(string Value, string Label, string Description);
 }
 
 public sealed class FeedSetupComponentModule(
@@ -379,6 +435,33 @@ public sealed class FeedSetupComponentModule(
         await UpdateSetupMessageAsync(session, "Updated group ids.");
     }
 
+    [ComponentInteraction(FeedSetupUi.StartCursorMenuCustomId)]
+    public async Task SelectStartCursorAsync()
+    {
+        if (!TryGetActiveSession(out var session, out var missingMessage))
+        {
+            await RespondWithSessionMissingAsync(missingMessage);
+            return;
+        }
+
+        if (!Context.TryGetStringMenuInteraction(out var interaction))
+        {
+            await RespondWithSessionMissingAsync("Invalid interaction for start date selection.");
+            return;
+        }
+
+        var selected = interaction.Data.SelectedValues.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(selected) || !FeedSetupUi.IsValidStartCursor(selected))
+        {
+            await UpdateSetupMessageAsync(session, "Invalid start date selection.");
+            return;
+        }
+
+        session.StartCursor = selected;
+        session.Touch();
+        await UpdateSetupMessageAsync(session, $"Selected start date `{FeedSetupUi.FormatStartCursor(selected)}`.");
+    }
+
     [ComponentInteraction(FeedSetupUi.SaveButtonCustomId)]
     public async Task SaveSetupAsync()
     {
@@ -405,7 +488,8 @@ public sealed class FeedSetupComponentModule(
             feedType,
             rulesets,
             eventTypes,
-            groupIds);
+            groupIds,
+            FeedSetupUi.GetStartCursorSince(session.StartCursor, DateTimeOffset.UtcNow));
 
         sessionStore.Clear(session.UserId);
         await RespondAsync(InteractionCallback.ModifyMessage(options =>

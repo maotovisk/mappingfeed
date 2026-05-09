@@ -18,6 +18,7 @@ public interface ISubscribedFeedService
         HashSet<Ruleset>? rulesets,
         HashSet<FeedEventType>? eventTypes,
         HashSet<long>? groupIds,
+        DateTimeOffset? startCursorSince = null,
         CancellationToken cancellationToken = default);
 
     Task<bool> DeleteSubscriptionAsync(long channelId, FeedType feedType, CancellationToken cancellationToken = default);
