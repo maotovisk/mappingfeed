@@ -1,13 +1,16 @@
+using System.Text.RegularExpressions;
 using MappingFeed.Data.Entities;
 using NetCord;
 using NetCord.Rest;
 
 namespace MappingFeed.Events.EmbedFactories;
 
-public sealed class FeedEmbedFactory(
+public sealed partial class FeedEmbedFactory(
     IBeatmapEventService beatmapEventService,
     IGroupEventService groupEventService)
 {
+    private const char ZeroWidthSpace = '\u200B';
+
     public async Task<EmbedProperties> CreateBeatmapsetEventEmbedAsync(
         BeatmapsetEvent beatmapsetEvent,
         CancellationToken cancellationToken)
@@ -43,16 +46,17 @@ public sealed class FeedEmbedFactory(
         FeedMapEventViewData mapData)
     {
         var title = $"{GetEventEmoji(eventView.EventType)}  {GetMapEventDisplayName(eventView.EventType)} ({ToDiscordRelative(eventView.CreatedAt)})";
+        var beatmapsetTitleLink = BuildDiscordLink(mapData.BeatmapsetTitle, mapData.BeatmapsetUrl);
         var mapperLink = mapData.MapperUserId is null
-            ? mapData.MapperName
-            : $"[{mapData.MapperName}](https://osu.ppy.sh/users/{mapData.MapperUserId.Value})";
+            ? EscapeDiscordMarkdown(mapData.MapperName)
+            : BuildDiscordLink(mapData.MapperName, $"https://osu.ppy.sh/users/{mapData.MapperUserId.Value}");
         var modeTags = mapData.Modes.Count == 0
             ? "[osu]"
             : string.Join(string.Empty, mapData.Modes.Select(x => $"[{x}]"));
 
         var lines = new List<string>
         {
-            $"**[{mapData.BeatmapsetTitle}]({mapData.BeatmapsetUrl})**",
+            $"**{beatmapsetTitleLink}**",
             $"Mapped by {mapperLink} **{modeTags}**",
         };
 
@@ -101,7 +105,7 @@ public sealed class FeedEmbedFactory(
         var lines = new List<string>
         {
             $"{GetEventEmoji(eventView.EventType)} **{label}** ({ToDiscordRelative(eventView.CreatedAt)})",
-            $"[{groupData.UserName}]({groupData.UserUrl}) {relation}",
+            $"{BuildDiscordLink(groupData.UserName, groupData.UserUrl)} {relation}",
             $"[**{groupData.GroupName}**]({groupData.GroupUrl})",
         };
 
@@ -121,7 +125,7 @@ public sealed class FeedEmbedFactory(
 
         var parts = rankedHistory
             .Where(x => !string.IsNullOrWhiteSpace(x.Username))
-            .Select(x => $"{GetEventEmoji(x.Action)} {EscapeDiscordMarkdown(x.Username!)}")
+            .Select(x => $"{GetEventEmoji(x.Action)} {BuildUserDisplayName(x.Username!, x.UserId)}")
             .ToList();
 
         return parts.Count == 0 ? null : string.Join("  ", parts);
@@ -208,19 +212,45 @@ public sealed class FeedEmbedFactory(
         return value[..Math.Max(0, maxLength - 3)] + "...";
     }
 
-    private static string EscapeDiscordMarkdown(string text)
+    private static string? EscapeDiscordMarkdown(string? text)
     {
         if (string.IsNullOrEmpty(text))
             return text;
 
-        // Escape Discord markdown special characters: * _ ~ ` [ ] \
-        return text
-            .Replace("\\", @"\\")  // Backslash must be escaped first
-            .Replace("*", "\\*")
-            .Replace("_", "\\_")
-            .Replace("~", "\\~")
-            .Replace("`", "\\`")
-            .Replace("[", "\\[")
-            .Replace("]", "\\]");
+        var replaceRegex = EscapableChars();
+        return replaceRegex.Replace(text, "\\$0");
     }
+
+    private static string BuildDiscordLink(string text, string url)
+    {
+        return $"[{EscapeDiscordLinkLabel(text)}]({url})";
+    }
+
+    private static string BuildUserDisplayName(string username, long? userId)
+    {
+        return userId is null
+            ? EscapeDiscordMarkdown(username)!
+            : BuildDiscordLink(username, $"https://osu.ppy.sh/users/{userId.Value}");
+    }
+
+    private static string EscapeDiscordLinkLabel(string text)
+    {
+        var escaped = LinkLabelSyntaxChars().Replace(text, "\\$0");
+        return LinkLabelFormattingChars().Replace(escaped, match =>
+        {
+            var indexAfterMatch = match.Index + match.Length;
+            return indexAfterMatch < escaped.Length && escaped[indexAfterMatch] == ZeroWidthSpace
+                ? match.Value
+                : $"{match.Value}{ZeroWidthSpace}";
+        });
+    }
+
+    [GeneratedRegex(@"(?<!\\)[*_~`\[\]()]")]
+    private static partial Regex EscapableChars();
+
+    [GeneratedRegex(@"(?<!\\)[\[\]]")]
+    private static partial Regex LinkLabelSyntaxChars();
+
+    [GeneratedRegex(@"(?<!\\)[*_~`]")]
+    private static partial Regex LinkLabelFormattingChars();
 }
