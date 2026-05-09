@@ -2,49 +2,26 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MappingFeed.Config;
-using MappingFeed.Data;
 using MappingFeed.Data.Entities;
-using MappingFeed.Osu;
-using Microsoft.EntityFrameworkCore;
+using MappingFeed.Data.Enums;
+using MappingFeed.Data.TransitionalRecords;
 using Microsoft.Extensions.Options;
 
-namespace MappingFeed.Feed;
+namespace MappingFeed.Fetchers.Events;
 
-public sealed class FeedFetchingWorker(
-    IDbContextFactory<MappingFeedDbContext> dbContextFactory,
-    OsuApiClient osuApiClient,
+public sealed class BeatmapEventsFetcher(
+    IBeatmapEventService beatmapEventService,
+    IOsuApiService osuApiService,
     IOptions<FeedOptions> options,
-    ILogger<FeedFetchingWorker> logger) : BackgroundService
+    ILogger<BeatmapEventsFetcher> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly FeedOptions _options = options.Value;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await FetchBeatmapsetEventsAsync(stoppingToken);
-                await FetchGroupEventsAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(exception, "Failed while fetching osu! feed events.");
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(_options.PollIntervalSeconds), stoppingToken);
-        }
-    }
-
-    private async Task FetchBeatmapsetEventsAsync(CancellationToken cancellationToken)
+    public async Task FetchAsync(CancellationToken cancellationToken)
     {
         logger.LogInformation("Fetching beatmapset events.");
-        var payload = await osuApiClient.GetBeatmapsetEventsAsync(_options.EventsBatchSize, cancellationToken);
+        var payload = await osuApiService.GetBeatmapEventsAsync(_options.EventsBatchSize, cancellationToken);
 
         var parsedEvents = payload.Events
             .Select(ParseBeatmapsetEvent)
@@ -59,62 +36,11 @@ public sealed class FeedFetchingWorker(
         CoalesceQualificationWithNomination(parsedEvents, payload.Events);
         await EnrichBeatmapsetEventsAsync(parsedEvents, payload.Events, payload.Users, cancellationToken);
 
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToHashSet();
-        var existingIdSet = await db.BeatmapsetEvents
-            .Where(x => incomingEventIds.Contains(x.EventId))
-            .Select(x => x.EventId)
-            .ToHashSetAsync(cancellationToken);
-
-        var newEvents = parsedEvents
-            .Where(x => !existingIdSet.Contains(x.EventId))
-            .ToList();
-
+        var newEvents = await beatmapEventService.SaveNewEventsAsync(parsedEvents, cancellationToken);
         if (newEvents.Count == 0)
             return;
 
-        db.BeatmapsetEvents.AddRange(newEvents);
-        await db.SaveChangesAsync(cancellationToken);
         logger.LogInformation("Fetched {Count} beatmapset events.", newEvents.Count);
-    }
-
-    private async Task FetchGroupEventsAsync(CancellationToken cancellationToken)
-    {
-        logger.LogInformation("Fetching group events.");
-        var payloads = await osuApiClient.GetGroupHistoryEventsAsync(_options.EventsBatchSize, cancellationToken);
-
-        var parsedEvents = payloads
-            .Select(ParseGroupEvent)
-            .Where(x => x is not null)
-            .Select(x => x!)
-            .OrderBy(x => x.EventId)
-            .ToList();
-
-        if (parsedEvents.Count == 0)
-            return;
-
-        await EnrichGroupEventsAsync(parsedEvents, cancellationToken);
-
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var incomingEventIds = parsedEvents.Select(x => x.EventId).ToHashSet();
-        var existingIdSet = await db.GroupEvents
-            .Where(x => incomingEventIds.Contains(x.EventId))
-            .Select(x => x.EventId)
-            .ToHashSetAsync(cancellationToken);
-
-        var newEvents = parsedEvents
-            .Where(x => !existingIdSet.Contains(x.EventId))
-            .ToList();
-
-        if (newEvents.Count == 0)
-            return;
-
-        db.GroupEvents.AddRange(newEvents);
-        await db.SaveChangesAsync(cancellationToken);
-
-        logger.LogInformation("Fetched {Count} group events.", newEvents.Count);
     }
 
     private async Task EnrichBeatmapsetEventsAsync(
@@ -144,7 +70,7 @@ public sealed class FeedFetchingWorker(
 
             if (!beatmapsetCache.TryGetValue(parsedEvent.SetId, out var beatmapset))
             {
-                beatmapset = await osuApiClient.GetBeatmapsetAsync(parsedEvent.SetId, cancellationToken);
+                beatmapset = await osuApiService.GetBeatmapAsync(parsedEvent.SetId, cancellationToken);
                 beatmapsetCache[parsedEvent.SetId] = beatmapset;
             }
 
@@ -164,7 +90,7 @@ public sealed class FeedFetchingWorker(
 
                 if (!profileCache.TryGetValue(userId, out var profile))
                 {
-                    profile = await osuApiClient.GetUserProfileAsync(userId, cancellationToken);
+                    profile = await osuApiService.GetUserAsync(userId, cancellationToken);
                     profileCache[userId] = profile;
                 }
 
@@ -187,7 +113,7 @@ public sealed class FeedFetchingWorker(
 
             if (!historyCache.TryGetValue(parsedEvent.SetId, out var completeHistory))
             {
-                completeHistory = await osuApiClient.GetCompleteBeatmapsetEventHistoryAsync(parsedEvent.SetId, cancellationToken);
+                completeHistory = await osuApiService.GetCompleteBeatmapsetEventHistoryAsync(parsedEvent.SetId, cancellationToken);
                 historyCache[parsedEvent.SetId] = completeHistory;
             }
 
@@ -201,53 +127,6 @@ public sealed class FeedFetchingWorker(
             parsedEvent.RankedHistoryJson = rankedHistory.Count == 0
                 ? null
                 : JsonSerializer.Serialize(rankedHistory, JsonOptions);
-        }
-    }
-
-    private async Task EnrichGroupEventsAsync(
-        IReadOnlyCollection<GroupEvent> parsedEvents,
-        CancellationToken cancellationToken)
-    {
-        var profileCache = new Dictionary<long, OsuUserProfileInfo?>();
-        var groupNameCache = new Dictionary<long, string?>();
-        var groupColorCache = new Dictionary<long, string?>();
-
-        foreach (var parsedEvent in parsedEvents.OrderBy(x => x.EventId))
-        {
-            if (!profileCache.TryGetValue(parsedEvent.UserId, out var profile))
-            {
-                profile = await osuApiClient.GetUserProfileAsync(parsedEvent.UserId, cancellationToken);
-                profileCache[parsedEvent.UserId] = profile;
-            }
-
-            parsedEvent.UserName = FirstNonEmpty(parsedEvent.UserName)
-                ?? FirstNonEmpty(profile?.Username)
-                ?? await osuApiClient.GetUserNameAsync(parsedEvent.UserId, cancellationToken)
-                ?? $"User {parsedEvent.UserId}";
-            parsedEvent.ActorAvatarUrl = FirstNonEmpty(parsedEvent.ActorAvatarUrl)
-                ?? FirstNonEmpty(profile?.AvatarUrl);
-            parsedEvent.ActorBadge = FirstNonEmpty(parsedEvent.ActorBadge)
-                ?? FirstNonEmpty(profile?.Badge);
-            parsedEvent.ActorColor = FirstNonEmpty(parsedEvent.ActorColor)
-                ?? FirstNonEmpty(profile?.Color);
-
-            if (!groupNameCache.TryGetValue(parsedEvent.GroupId, out var groupName))
-            {
-                groupName = await osuApiClient.GetGroupNameAsync(parsedEvent.GroupId, cancellationToken);
-                groupNameCache[parsedEvent.GroupId] = groupName;
-            }
-
-            if (!groupColorCache.TryGetValue(parsedEvent.GroupId, out var groupColor))
-            {
-                groupColor = await osuApiClient.GetGroupColorAsync(parsedEvent.GroupId, cancellationToken);
-                groupColorCache[parsedEvent.GroupId] = groupColor;
-            }
-
-            parsedEvent.GroupName = FirstNonEmpty(parsedEvent.GroupName)
-                ?? FirstNonEmpty(groupName)
-                ?? $"Group {parsedEvent.GroupId}";
-            parsedEvent.GroupColor = FirstNonEmpty(parsedEvent.GroupColor)
-                ?? FirstNonEmpty(groupColor);
         }
     }
 
@@ -265,7 +144,7 @@ public sealed class FeedFetchingWorker(
         {
             if (parsedEvent.EventType is FeedEventType.Nomination or FeedEventType.Qualification)
             {
-                var praiseOrHypeMessage = await osuApiClient.GetLatestPraiseOrHypeMessageAsync(
+                var praiseOrHypeMessage = await osuApiService.GetLatestPraiseOrHypeMessageAsync(
                     parsedEvent.SetId,
                     parsedEvent.TriggeredBy.Value,
                     createdAt,
@@ -277,7 +156,7 @@ public sealed class FeedFetchingWorker(
 
             if (parsedEvent.EventType is FeedEventType.Disqualification or FeedEventType.NominationReset)
             {
-                var discussionMessageByUser = await osuApiClient.GetLatestDiscussionMessageByUserAsync(
+                var discussionMessageByUser = await osuApiService.GetLatestDiscussionMessageByUserAsync(
                     parsedEvent.SetId,
                     parsedEvent.TriggeredBy.Value,
                     createdAt,
@@ -290,7 +169,7 @@ public sealed class FeedFetchingWorker(
 
         if (parsedEvent.PostId is not null || parsedEvent.DiscussionId is not null)
         {
-            var discussionMessage = await osuApiClient.GetBeatmapsetDiscussionMessageAsync(
+            var discussionMessage = await osuApiService.GetBeatmapsetDiscussionMessageAsync(
                 parsedEvent.SetId,
                 parsedEvent.PostId,
                 parsedEvent.DiscussionId,
@@ -311,7 +190,7 @@ public sealed class FeedFetchingWorker(
         if (rulesets.Count > 0)
             return rulesets;
 
-        var apiModes = await osuApiClient.GetBeatmapsetModesFailsafeAsync(
+        var apiModes = await osuApiService.GetBeatmapsetModesFailsafeAsync(
             parsedEvent.SetId,
             parsedEvent.TriggeredBy,
             parsedEvent.CreatedAt,
@@ -386,7 +265,7 @@ public sealed class FeedFetchingWorker(
                 var userId = historyEvent.UserId.Value;
                 if (!userProfileCache.TryGetValue(userId, out var profile))
                 {
-                    profile = await osuApiClient.GetUserProfileAsync(userId, cancellationToken);
+                    profile = await osuApiService.GetUserAsync(userId, cancellationToken);
                     userProfileCache[userId] = profile;
                 }
 
@@ -395,7 +274,7 @@ public sealed class FeedFetchingWorker(
                 if (!userNameCache.TryGetValue(userId, out userName))
                 {
                     userName = FirstNonEmpty(profile?.Username)
-                        ?? await osuApiClient.GetUserNameAsync(userId, cancellationToken);
+                        ?? await osuApiService.GetUserNameAsync(userId, cancellationToken);
                     userNameCache[userId] = userName;
                 }
             }
@@ -628,37 +507,6 @@ public sealed class FeedFetchingWorker(
         };
     }
 
-    private static GroupEvent? ParseGroupEvent(JsonObject payload)
-    {
-        var eventId = payload.TryGetInt64("id");
-        var userId = payload.TryGetInt64("user_id") ?? payload.TryGetNestedInt64("user", "id");
-        var groupId = payload.TryGetInt64("group_id");
-        var rawType = payload.TryGetString("type") ?? string.Empty;
-        var eventType = MapGroupEventType(rawType);
-
-        if (eventId is null || userId is null || groupId is null || eventType is null)
-            return null;
-
-        return new GroupEvent
-        {
-            EventId = eventId.Value,
-            UserId = userId.Value,
-            UserName = payload.TryGetString("user_name") ?? payload.TryGetNestedString("user", "username"),
-            ActorAvatarUrl = payload.TryGetNestedString("user", "avatar_url"),
-            ActorBadge = payload.TryGetNestedString("user", "title"),
-            ActorColor = TryExtractActorColor(payload),
-            CreatedAt = TryParseCreatedAt(payload.TryGetString("created_at")),
-            GroupId = groupId.Value,
-            GroupName = payload.TryGetString("group_name")
-                ?? payload.TryGetNestedString("group", "short_name")
-                ?? payload.TryGetNestedString("group", "name"),
-            GroupColor = TryExtractGroupColor(payload),
-            Playmodes = TryExtractGroupPlaymodes(payload),
-            EventType = eventType.Value,
-            RawEvent = payload.ToJsonString(JsonOptions),
-        };
-    }
-
     private static FeedEventType? MapBeatmapsetEventType(string rawType)
     {
         return rawType.Trim().ToLowerInvariant() switch
@@ -669,16 +517,6 @@ public sealed class FeedFetchingWorker(
             "disqualify" => FeedEventType.Disqualification,
             "rank" => FeedEventType.Ranked,
             "unrank" => FeedEventType.Unranked,
-            _ => null,
-        };
-    }
-
-    private static FeedEventType? MapGroupEventType(string rawType)
-    {
-        return rawType.Trim().ToLowerInvariant() switch
-        {
-            "user_add" or "user_add_playmodes" => FeedEventType.GroupAdd,
-            "user_remove" or "user_remove_playmodes" => FeedEventType.GroupRemove,
             _ => null,
         };
     }
@@ -766,38 +604,6 @@ public sealed class FeedFetchingWorker(
         return DateTimeOffset.TryParse(rawCreatedAt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var createdAt)
             ? createdAt
             : null;
-    }
-
-    private static string? TryExtractGroupPlaymodes(JsonObject payload)
-    {
-        if (payload["playmodes"] is not JsonArray playmodes)
-            return null;
-
-        var normalized = new List<string>();
-        foreach (var playmode in playmodes)
-        {
-            if (playmode is null)
-                continue;
-
-            var value = playmode.ToString();
-            if (FeedEnumExtensions.TryParseRuleset(value, out var ruleset))
-                normalized.Add(ruleset.ToCommandValue());
-            else if (!string.IsNullOrWhiteSpace(value))
-                normalized.Add(value.ToLowerInvariant());
-        }
-
-        return normalized.Count == 0
-            ? null
-            : string.Join(", ", normalized.Distinct());
-    }
-
-    private static string? TryExtractGroupColor(JsonObject payload)
-    {
-        var rawColor = payload.TryGetString("group_color", "group_colour")
-            ?? payload.TryGetNestedString("group", "color")
-            ?? payload.TryGetNestedString("group", "colour");
-
-        return NormalizeColor(rawColor);
     }
 
     private static string? TryExtractActorColor(JsonObject payload)

@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 
-namespace MappingFeed.Osu;
+namespace MappingFeed.Infrastructure.Json;
 
 internal static class JsonNodeExtensions
 {

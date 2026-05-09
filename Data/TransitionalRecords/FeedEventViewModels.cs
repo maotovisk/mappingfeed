@@ -1,4 +1,4 @@
-namespace MappingFeed.Feed;
+namespace MappingFeed.Data.TransitionalRecords;
 
 public sealed record FeedEventActor(
     long? UserId,

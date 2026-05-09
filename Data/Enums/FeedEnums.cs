@@ -1,7 +1,6 @@
-using MappingFeed.Osu;
 using System.Text.Json.Nodes;
 
-namespace MappingFeed.Feed;
+namespace MappingFeed.Data.Enums;
 
 public enum FeedType
 {

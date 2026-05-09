@@ -1,4 +1,3 @@
-using MappingFeed.Feed;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 
@@ -22,7 +21,7 @@ public static class FeedEventsHandlers
         [FromQuery(Name = "ruleset")] string? ruleset,
         [FromQuery(Name = "event_type")] string[]? eventType,
         [FromQuery(Name = "text")] string? text,
-        FeedEventQueryService queryService,
+        IBeatmapEventService beatmapEventService,
         CancellationToken cancellationToken)
     {
         if (!TryParseEventIdCursor(cursor, out var beforeEventId, out var error))
@@ -31,7 +30,7 @@ public static class FeedEventsHandlers
         if (!TryParseMapFilters(ruleset, eventType, text, out var filters, out error))
             return TypedResults.BadRequest(error);
 
-        var page = await queryService.GetRecentMapEventsPageAsync(limit, beforeEventId, filters, cancellationToken);
+        var page = await beatmapEventService.GetRecentEventsPageAsync(limit, beforeEventId, filters, cancellationToken);
         return TypedResults.Ok(ToPageResponse(FeedType.Map.ToCommandValue(), page));
     }
 
@@ -40,7 +39,7 @@ public static class FeedEventsHandlers
         string? cursor,
         [FromQuery(Name = "group_id")] string[]? groupId,
         [FromQuery(Name = "playmode")] string? playmode,
-        FeedEventQueryService queryService,
+        IGroupEventService groupEventService,
         CancellationToken cancellationToken)
     {
         if (!TryParseEventIdCursor(cursor, out var beforeEventId, out var error))
@@ -49,7 +48,7 @@ public static class FeedEventsHandlers
         if (!TryParseGroupFilters(groupId, playmode, out var filters, out error))
             return TypedResults.BadRequest(error);
 
-        var page = await queryService.GetRecentGroupEventsPageAsync(limit, beforeEventId, filters, cancellationToken);
+        var page = await groupEventService.GetRecentEventsPageAsync(limit, beforeEventId, filters, cancellationToken);
         return TypedResults.Ok(ToPageResponse(FeedType.Group.ToCommandValue(), page));
     }
 

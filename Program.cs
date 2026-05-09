@@ -2,8 +2,8 @@ using MappingFeed.Commands;
 using MappingFeed.Config;
 using MappingFeed.Data;
 using MappingFeed.Api.Handlers;
-using MappingFeed.Feed;
-using MappingFeed.Osu;
+using MappingFeed.DependencyInjection;
+using MappingFeed.Services.Backfill;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using System.Text.Json.Serialization;
@@ -80,18 +80,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
 });
 
-builder.Services.AddSingleton<FeedEventViewFactory>();
-builder.Services.AddSingleton<FeedEventQueryService>();
-builder.Services.AddSingleton<FeedEmbedFactory>();
-builder.Services.AddSingleton<FeedSetupSessionStore>();
-builder.Services.AddSingleton<FeedTypeAutocompleteProvider>();
-
-builder.Services.AddHttpClient<OsuAuthClient>(ConfigureOsuHttpClient);
-builder.Services.AddHttpClient<OsuApiClient>(ConfigureOsuHttpClient);
-
-builder.Services.AddHostedService<FeedFetchingWorker>();
-builder.Services.AddHostedService<FeedSendingWorker>();
-builder.Services.AddHostedService<ApiBackfillWorker>();
+builder.Services.AddMappingFeedServices();
 
 var app = builder.Build();
 
@@ -114,9 +103,3 @@ app.MapOpenApi();
 app.MapScalarApiReference();
 
 await app.RunAsync();
-
-static void ConfigureOsuHttpClient(IServiceProvider serviceProvider, HttpClient client)
-{
-    var osuOptions = serviceProvider.GetRequiredService<IOptions<OsuOptions>>().Value;
-    client.BaseAddress = new Uri(osuOptions.BaseUrl);
-}

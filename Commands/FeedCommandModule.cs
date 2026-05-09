@@ -1,6 +1,3 @@
-using MappingFeed.Data;
-using MappingFeed.Feed;
-using Microsoft.EntityFrameworkCore;
 using NetCord;
 using NetCord.Rest;
 using NetCord.Services.ApplicationCommands;
@@ -8,7 +5,7 @@ using NetCord.Services.ApplicationCommands;
 namespace MappingFeed.Commands;
 
 public sealed class FeedCommandModule(
-    IDbContextFactory<MappingFeedDbContext> dbContextFactory,
+    ISubscribedFeedService subscribedFeedService,
     FeedSetupSessionStore setupSessionStore)
     : ApplicationCommandModule<ApplicationCommandContext>
 {
@@ -45,16 +42,9 @@ public sealed class FeedCommandModule(
 
         var channelId = Context.GetChannelId();
 
-        await using var db = await dbContextFactory.CreateDbContextAsync();
-
-        var subscription = await db.SubscribedChannels
-            .FirstOrDefaultAsync(x => x.ChannelId == channelId && x.FeedType == feedType);
-
-        if (subscription is null)
+        var deleted = await subscribedFeedService.DeleteSubscriptionAsync(channelId, feedType);
+        if (!deleted)
             return $"This channel is not subscribed to `{feedType.ToCommandValue()}`.";
-
-        db.SubscribedChannels.Remove(subscription);
-        await db.SaveChangesAsync();
 
         return $"Unsubscribed this channel from `{feedType.ToCommandValue()}`.";
     }
@@ -67,18 +57,13 @@ public sealed class FeedCommandModule(
 
         var channelId = Context.GetChannelId();
 
-        await using var db = await dbContextFactory.CreateDbContextAsync();
-
-        var subscriptions = await db.SubscribedChannels
-            .Where(x => x.ChannelId == channelId)
-            .OrderBy(x => x.FeedType)
-            .ToListAsync();
+        var subscriptions = await subscribedFeedService.GetChannelSubscriptionsAsync(channelId);
 
         if (subscriptions.Count == 0)
             return "This channel has no feed subscriptions.";
 
         var status = string.Join(", ", subscriptions.Select(x =>
-            $"{x.FeedType.ToCommandValue()} ({FeedSubscriptionOperations.BuildFilterSummary(x.FeedType, x.Rulesets, x.EventTypes, x.GroupId)})"));
+            $"{x.FeedType.ToCommandValue()} ({SubscribedFeedService.BuildFilterSummary(x.FeedType, x.Rulesets, x.EventTypes, x.GroupId)})"));
 
         return $"Enabled feeds: {status}";
     }

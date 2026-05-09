@@ -2,15 +2,17 @@ using MappingFeed.Data.Entities;
 using NetCord;
 using NetCord.Rest;
 
-namespace MappingFeed.Feed;
+namespace MappingFeed.Events.EmbedFactories;
 
-public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
+public sealed class FeedEmbedFactory(
+    IBeatmapEventService beatmapEventService,
+    IGroupEventService groupEventService)
 {
     public async Task<EmbedProperties> CreateBeatmapsetEventEmbedAsync(
         BeatmapsetEvent beatmapsetEvent,
         CancellationToken cancellationToken)
     {
-        var eventView = await eventViewFactory.CreateBeatmapsetEventEntryAsync(beatmapsetEvent, cancellationToken);
+        var eventView = await beatmapEventService.CreateViewEntryAsync(beatmapsetEvent, cancellationToken);
         return CreateEmbed(eventView);
     }
 
@@ -18,7 +20,7 @@ public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
         GroupEvent groupEvent,
         CancellationToken cancellationToken)
     {
-        var eventView = await eventViewFactory.CreateGroupEventEntryAsync(groupEvent, cancellationToken);
+        var eventView = await groupEventService.CreateViewEntryAsync(groupEvent, cancellationToken);
         return CreateEmbed(eventView);
     }
 
@@ -70,14 +72,12 @@ public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
         embed.WithThumbnail(new EmbedThumbnailProperties(BuildBeatmapsetThumbnailUrl(mapData.SetId)));
 
         var footerText = BuildMapFooterText(eventView.EventType, eventView.Actor, mapData.Message);
-        if (!string.IsNullOrWhiteSpace(footerText))
-        {
-            var footer = new EmbedFooterProperties().WithText(footerText!);
-            if (!string.IsNullOrWhiteSpace(eventView.Actor?.AvatarUrl))
-                footer.WithIconUrl(eventView.Actor.AvatarUrl!);
+        if (string.IsNullOrWhiteSpace(footerText)) return;
+        var footer = new EmbedFooterProperties().WithText(footerText!);
+        if (!string.IsNullOrWhiteSpace(eventView.Actor?.AvatarUrl))
+            footer.WithIconUrl(eventView.Actor.AvatarUrl!);
 
-            embed.WithFooter(footer);
-        }
+        embed.WithFooter(footer);
     }
 
     private static void ApplyGroupVisuals(
@@ -97,7 +97,7 @@ public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
             FeedEventType.GroupRemove => "Removed",
             _ => eventView.EventType.ToDisplayName(),
         };
-
+        
         var lines = new List<string>
         {
             $"{GetEventEmoji(eventView.EventType)} **{label}** ({ToDiscordRelative(eventView.CreatedAt)})",
@@ -106,7 +106,7 @@ public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
         };
 
         if (groupData.Playmodes.Count > 0)
-            lines.Add($"for [{string.Join(", ", groupData.Playmodes)}]");
+            lines.Add($"for **[{string.Join(", ", groupData.Playmodes)}]**");
 
         embed.WithDescription(string.Join('\n', lines));
 
@@ -121,7 +121,7 @@ public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
 
         var parts = rankedHistory
             .Where(x => !string.IsNullOrWhiteSpace(x.Username))
-            .Select(x => $"{GetEventEmoji(x.Action)} {x.Username}")
+            .Select(x => $"{GetEventEmoji(x.Action)} {EscapeDiscordMarkdown(x.Username!)}")
             .ToList();
 
         return parts.Count == 0 ? null : string.Join("  ", parts);
@@ -206,5 +206,21 @@ public sealed class FeedEmbedFactory(FeedEventViewFactory eventViewFactory)
             return value;
 
         return value[..Math.Max(0, maxLength - 3)] + "...";
+    }
+
+    private static string EscapeDiscordMarkdown(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return text;
+
+        // Escape Discord markdown special characters: * _ ~ ` [ ] \
+        return text
+            .Replace("\\", @"\\")  // Backslash must be escaped first
+            .Replace("*", "\\*")
+            .Replace("_", "\\_")
+            .Replace("~", "\\~")
+            .Replace("`", "\\`")
+            .Replace("[", "\\[")
+            .Replace("]", "\\]");
     }
 }

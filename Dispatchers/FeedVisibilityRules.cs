@@ -1,7 +1,7 @@
 using MappingFeed.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
-namespace MappingFeed.Feed;
+namespace MappingFeed.Dispatchers;
 
 public static class FeedVisibilityRules
 {

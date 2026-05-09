@@ -1,8 +1,4 @@
 using System.Collections.Concurrent;
-using MappingFeed.Data;
-using MappingFeed.Data.Entities;
-using MappingFeed.Feed;
-using Microsoft.EntityFrameworkCore;
 using NetCord;
 using NetCord.Rest;
 using NetCord.Services.ComponentInteractions;
@@ -283,7 +279,7 @@ internal static class FeedSetupUi
 }
 
 public sealed class FeedSetupComponentModule(
-    IDbContextFactory<MappingFeedDbContext> dbContextFactory,
+    ISubscribedFeedService subscribedFeedService,
     FeedSetupSessionStore sessionStore)
     : ComponentInteractionModule<ComponentInteractionContext>
 {
@@ -404,8 +400,7 @@ public sealed class FeedSetupComponentModule(
             return;
         }
 
-        var result = await FeedSubscriptionOperations.UpsertSubscriptionAsync(
-            dbContextFactory,
+        var result = await subscribedFeedService.UpsertSubscriptionAsync(
             session.ChannelId,
             feedType,
             rulesets,
@@ -523,75 +518,5 @@ public sealed class FeedSetupComponentModule(
         }
 
         return true;
-    }
-}
-
-internal static class FeedSubscriptionOperations
-{
-    public static async Task<string> UpsertSubscriptionAsync(
-        IDbContextFactory<MappingFeedDbContext> dbContextFactory,
-        long channelId,
-        FeedType feedType,
-        HashSet<Ruleset>? rulesets,
-        HashSet<FeedEventType>? eventTypes,
-        HashSet<long>? groupIds,
-        CancellationToken cancellationToken = default)
-    {
-        var serializedRulesets = FeedEnumExtensions.SerializeRulesets(rulesets);
-        var serializedEventTypes = FeedEnumExtensions.SerializeEventTypes(eventTypes);
-        var serializedGroupIds = FeedEnumExtensions.SerializeGroupIds(groupIds);
-
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var existingSubscription = await db.SubscribedChannels
-            .FirstOrDefaultAsync(
-                x => x.ChannelId == channelId && x.FeedType == feedType,
-                cancellationToken);
-
-        if (existingSubscription is not null)
-        {
-            var existingSerializedGroupIds = FeedEnumExtensions.SerializeGroupIds(
-                FeedEnumExtensions.DeserializeGroupIds(existingSubscription.GroupId));
-
-            if (string.Equals(existingSubscription.Rulesets, serializedRulesets, StringComparison.Ordinal) &&
-                string.Equals(existingSubscription.EventTypes, serializedEventTypes, StringComparison.Ordinal) &&
-                string.Equals(existingSerializedGroupIds, serializedGroupIds, StringComparison.Ordinal))
-                return $"This channel is already subscribed to `{feedType.ToCommandValue()}` ({BuildFilterSummary(feedType, existingSubscription.Rulesets, existingSubscription.EventTypes, existingSerializedGroupIds)}).";
-
-            existingSubscription.Rulesets = serializedRulesets;
-            existingSubscription.EventTypes = serializedEventTypes;
-            existingSubscription.GroupId = serializedGroupIds;
-            await db.SaveChangesAsync(cancellationToken);
-            return $"Updated `{feedType.ToCommandValue()}` subscription ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, serializedGroupIds)}).";
-        }
-
-        db.SubscribedChannels.Add(new SubscribedChannel
-        {
-            ChannelId = channelId,
-            FeedType = feedType,
-            LastEventId = 0,
-            Rulesets = serializedRulesets,
-            EventTypes = serializedEventTypes,
-            GroupId = serializedGroupIds,
-        });
-
-        await db.SaveChangesAsync(cancellationToken);
-        return $"Subscribed this channel to `{feedType.ToCommandValue()}` ({BuildFilterSummary(feedType, serializedRulesets, serializedEventTypes, serializedGroupIds)}).";
-    }
-
-    public static string BuildFilterSummary(
-        FeedType feedType,
-        string? serializedRulesets,
-        string? serializedEventTypes,
-        string? serializedGroupIds)
-    {
-        return feedType switch
-        {
-            FeedType.Map =>
-                $"rulesets: {FeedEnumExtensions.FormatRulesetsForDisplay(serializedRulesets)}, event types: {FeedEnumExtensions.FormatEventTypesForDisplay(serializedEventTypes)}",
-            FeedType.Group =>
-                $"group ids: {FeedEnumExtensions.FormatGroupIdsForDisplay(serializedGroupIds)}",
-            _ => "default",
-        };
     }
 }

@@ -40,22 +40,24 @@ It also exposes a minimal HTTP API for recent map/group event views.
 
 ## Architecture
 
-- `FeedFetchingWorker`
+- `EventFetcherWorker`
   - Polls osu! endpoints and writes new events into local DB.
-- `FeedSendingWorker`
+- `FeedingDispatcherWorker`
   - Reads pending events per subscription, applies filters, sends Discord messages, advances `LastEventId` cursor.
 - `FeedEmbedFactory`
   - Renders embeds from shared feed event view entries.
-- `FeedEventViewFactory`
-  - Builds reusable map/group view entries (shared by embed and API), with shared cache-backed enrichment.
-- `FeedEventQueryService`
-  - Service layer for recent-event DB queries with cursor pagination, reused by HTTP handlers.
+- `BeatmapEventService` / `GroupEventService`
+  - Own feed-specific application operations, including event persistence, dispatch reads, cursor-paginated API reads, and view-entry projection.
+- `Repositories/*`
+  - Lower-level EF Core access for beatmap events, group events, and subscribed feeds.
 - Minimal API handlers (`Api/Handlers/FeedEventsHandlers`)
   - Exposes read-only recent-event endpoints.
 - OpenAPI + Scalar
   - Serves OpenAPI JSON and Scalar API reference UI.
-- `MappingFeedDbContext` + `DatabaseSchemaUpdater`
-  - Maintains SQLite schema/indexes and lightweight column backfills.
+- `MappingFeedDbContext`
+  - Owns the EF entity mapping for the local SQLite store.
+- `Services/Backfill`
+  - Maintains SQLite schema/indexes and runs historical API backfills.
 
 ## Requirements
 

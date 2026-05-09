@@ -1,5 +1,4 @@
-using MappingFeed.Feed;
-using MappingFeed.Osu;
+using MappingFeed.Data;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
@@ -7,7 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 
-namespace MappingFeed.Data;
+namespace MappingFeed.Services.Backfill;
 
 public static class DatabaseSchemaUpdater
 {
@@ -59,7 +58,7 @@ public static class DatabaseSchemaUpdater
 
     public static async Task RunApiBackfillAsync(
         MappingFeedDbContext db,
-        OsuApiClient osuApiClient,
+        IOsuApiService osuApiClient,
         TimeSpan apiThrottleDelay,
         int apiBatchSize,
         CancellationToken cancellationToken = default)
@@ -583,7 +582,7 @@ public static class DatabaseSchemaUpdater
             try
             {
                 beatmapset = await context.InvokeAsync(
-                    (api, ct) => api.GetBeatmapsetAsync(setId, ct),
+                    (api, ct) => api.GetBeatmapAsync(setId, ct),
                     cancellationToken);
             }
             catch
@@ -651,7 +650,7 @@ public static class DatabaseSchemaUpdater
             try
             {
                 profile = await context.InvokeAsync(
-                    (api, ct) => api.GetUserProfileAsync(userId, ct),
+                    (api, ct) => api.GetUserAsync(userId, ct),
                     cancellationToken);
             }
             catch
@@ -861,7 +860,7 @@ public static class DatabaseSchemaUpdater
             try
             {
                 profile = await context.InvokeAsync(
-                    (api, ct) => api.GetUserProfileAsync(userId, ct),
+                    (api, ct) => api.GetUserAsync(userId, ct),
                     cancellationToken);
             }
             catch
@@ -1127,7 +1126,7 @@ public static class DatabaseSchemaUpdater
                 if (!userProfileCache.TryGetValue(userId, out var profile))
                 {
                     profile = await context.InvokeAsync(
-                        (api, ct) => api.GetUserProfileAsync(userId, ct),
+                        (api, ct) => api.GetUserAsync(userId, ct),
                         cancellationToken);
                     userProfileCache[userId] = profile;
                 }
@@ -1467,7 +1466,7 @@ public static class DatabaseSchemaUpdater
     }
 
     private sealed class ApiBackfillContext(
-        OsuApiClient apiClient,
+        IOsuApiService apiClient,
         TimeSpan throttleDelay,
         int batchSize)
     {
@@ -1476,7 +1475,7 @@ public static class DatabaseSchemaUpdater
         private DateTimeOffset _nextAllowedRequestAtUtc = DateTimeOffset.MinValue;
 
         public async Task<T> InvokeAsync<T>(
-            Func<OsuApiClient, CancellationToken, Task<T>> operation,
+            Func<IOsuApiService, CancellationToken, Task<T>> operation,
             CancellationToken cancellationToken)
         {
             if (throttleDelay > TimeSpan.Zero)

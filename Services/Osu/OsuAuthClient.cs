@@ -2,7 +2,7 @@ using System.Text.Json.Nodes;
 using MappingFeed.Config;
 using Microsoft.Extensions.Options;
 
-namespace MappingFeed.Osu;
+namespace MappingFeed.Services.Osu;
 
 public sealed class OsuAuthClient(
     HttpClient httpClient,
