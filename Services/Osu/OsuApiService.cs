@@ -3,18 +3,19 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MappingFeed.Config;
+using MappingFeed.Data.TransitionalRecords;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
-namespace MappingFeed.Osu;
+namespace MappingFeed.Services.Osu;
 
-public sealed class OsuApiClient(
+public sealed class OsuApiService(
     HttpClient httpClient,
     OsuAuthClient authClient,
     IMemoryCache memoryCache,
     IOptions<OsuOptions> osuOptions,
     IOptions<FeedOptions> feedOptions,
-    ILogger<OsuApiClient> logger)
+    ILogger<OsuApiService> logger) : IOsuApiService
 {
     private const string BeatmapsetEventsPath = "/api/v2/beatmapsets/events";
     private const string GroupHistoryPath = "/groups/history";
@@ -55,6 +56,26 @@ public sealed class OsuApiClient(
     private readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(Math.Clamp(feedOptions.Value.ApiCacheMinutes, 5, 20));
     private readonly SemaphoreSlim _requestSemaphore = new(1, 1);
     private DateTimeOffset _nextAllowedRequestAtUtc = DateTimeOffset.MinValue;
+
+    public Task<OsuBeatmapsetEventsPayload> GetBeatmapEventsAsync(int limit, CancellationToken cancellationToken)
+    {
+        return GetBeatmapsetEventsAsync(limit, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<JsonObject>> GetGroupEventsAsync(int limit, CancellationToken cancellationToken)
+    {
+        return GetGroupHistoryEventsAsync(limit, cancellationToken);
+    }
+
+    public Task<OsuBeatmapsetInfo?> GetBeatmapAsync(long setId, CancellationToken cancellationToken)
+    {
+        return GetBeatmapsetAsync(setId, cancellationToken);
+    }
+
+    public Task<OsuUserProfileInfo?> GetUserAsync(long userId, CancellationToken cancellationToken)
+    {
+        return GetUserProfileAsync(userId, cancellationToken);
+    }
 
     public async Task<OsuBeatmapsetEventsPayload> GetBeatmapsetEventsAsync(int limit, CancellationToken cancellationToken)
     {
@@ -206,6 +227,37 @@ public sealed class OsuApiClient(
 
             return new OsuGroupInfo(name, color);
         }, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<string>> GetUserGroupPlaymodesAsync(
+        long userId,
+        long groupId,
+        CancellationToken cancellationToken)
+    {
+        var cacheKey = $"user_group_playmodes:user:{userId}:group:{groupId}";
+        if (memoryCache.TryGetValue(cacheKey, out IReadOnlyList<string>? cachedModes) && cachedModes is not null)
+            return cachedModes;
+
+        var root = await GetRootAsync($"/api/v2/users/{userId}", [], cancellationToken);
+        if (root.Count == 0)
+        {
+            memoryCache.Set(cacheKey, EmptyModes, _cacheDuration);
+            return EmptyModes;
+        }
+
+        var groups = root.TryGetArray("groups") ?? [];
+        foreach (var group in groups.OfType<JsonObject>())
+        {
+            if (group.TryGetInt64("id") != groupId)
+                continue;
+
+            var playmodes = ExtractGroupPlaymodes(group);
+            memoryCache.Set(cacheKey, playmodes, _cacheDuration);
+            return playmodes;
+        }
+
+        memoryCache.Set(cacheKey, EmptyModes, _cacheDuration);
+        return EmptyModes;
     }
 
     public async Task<string?> GetBeatmapsetDiscussionMessageAsync(
@@ -510,7 +562,7 @@ public sealed class OsuApiClient(
         for (var attempt = 0; attempt <= MaxTooManyRequestsRetries; attempt++)
         {
             var shouldRetry = false;
-            var retryDelay = TimeSpan.Zero;
+            TimeSpan retryDelay;
 
             await _requestSemaphore.WaitAsync(cancellationToken);
             try
@@ -605,13 +657,9 @@ public sealed class OsuApiClient(
                 _requestSemaphore.Release();
             }
 
-            if (shouldRetry)
-            {
-                await Task.Delay(retryDelay, cancellationToken);
-                continue;
-            }
-
-            return [];
+            if (!shouldRetry) return [];
+            
+            await Task.Delay(retryDelay, cancellationToken);
         }
 
         return [];
@@ -763,7 +811,7 @@ public sealed class OsuApiClient(
 
         foreach (var discussion in discussions.OrderByDescending(x => x.CreatedAt ?? DateTimeOffset.MinValue))
         {
-            if (discussion.BeatmapId is not long beatmapId)
+            if (discussion.BeatmapId is not { } beatmapId)
                 continue;
 
             if (beatmapModes.TryGetValue(beatmapId, out var beatmapMode))
@@ -835,6 +883,51 @@ public sealed class OsuApiClient(
             "mania" => "mania",
             _ => null,
         };
+    }
+
+    private static IReadOnlyList<string> ExtractGroupPlaymodes(JsonObject group)
+    {
+        if (group["playmodes"] is not JsonArray playmodesArray)
+            return EmptyModes;
+
+        var modes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var modeNode in playmodesArray)
+        {
+            var mode = TryExtractModeValue(modeNode);
+            if (!string.IsNullOrWhiteSpace(mode))
+                modes.Add(mode);
+        }
+
+        return modes.Count == 0
+            ? EmptyModes
+            : modes.OrderBy(ModeOrder).ToList();
+    }
+
+    private static string? TryExtractModeValue(JsonNode? modeNode)
+    {
+        if (modeNode is null)
+            return null;
+
+        if (modeNode is JsonValue valueNode)
+        {
+            if (valueNode.TryGetValue<string>(out var modeString))
+                return NormalizeMode(modeString);
+
+            if (valueNode.TryGetValue<long>(out var modeLong) && FeedEnumExtensions.TryParseRulesetId(modeLong, out var rulesetFromLong))
+                return rulesetFromLong.ToCommandValue();
+
+            if (valueNode.TryGetValue<int>(out var modeInt) && FeedEnumExtensions.TryParseRulesetId(modeInt, out var rulesetFromInt))
+                return rulesetFromInt.ToCommandValue();
+        }
+
+        var raw = modeNode.ToString();
+        if (FeedEnumExtensions.TryParseRuleset(raw, out var parsedRuleset))
+            return parsedRuleset.ToCommandValue();
+
+        if (long.TryParse(raw, out var modeId) && FeedEnumExtensions.TryParseRulesetId(modeId, out var parsedFromId))
+            return parsedFromId.ToCommandValue();
+
+        return NormalizeMode(raw);
     }
 
     private static int ModeOrder(string mode)
@@ -951,7 +1044,3 @@ public sealed class OsuApiClient(
             query.Add(new KeyValuePair<string, string?>("types[]", eventType));
     }
 }
-
-public sealed record OsuBeatmapsetInfo(string? Title, string? Creator, string? ThumbnailUrl);
-public sealed record OsuUserProfileInfo(string? Username, string? AvatarUrl, string? Badge, string? Color);
-public sealed record OsuGroupInfo(string? Name, string? Color);

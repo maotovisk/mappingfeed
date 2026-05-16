@@ -1,13 +1,14 @@
 using MappingFeed.Config;
-using MappingFeed.Osu;
+using MappingFeed.Data;
+using MappingFeed.Services.Backfill;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
-namespace MappingFeed.Data;
+namespace MappingFeed.Workers;
 
 public sealed class ApiBackfillWorker(
     IDbContextFactory<MappingFeedDbContext> dbContextFactory,
-    OsuApiClient osuApiClient,
+    IApiBackfillService apiBackfillService,
     IOptions<FeedOptions> options,
     ILogger<ApiBackfillWorker> logger) : BackgroundService
 {
@@ -39,9 +40,8 @@ public sealed class ApiBackfillWorker(
                     throttleDelay.TotalMilliseconds,
                     batchSize);
 
-                await DatabaseSchemaUpdater.RunApiBackfillAsync(
+                await apiBackfillService.RunAsync(
                     db,
-                    osuApiClient,
                     throttleDelay,
                     batchSize,
                     stoppingToken);

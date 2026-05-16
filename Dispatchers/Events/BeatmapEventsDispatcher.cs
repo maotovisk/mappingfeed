@@ -1,70 +1,29 @@
 using MappingFeed.Config;
-using MappingFeed.Data;
 using MappingFeed.Data.Entities;
-using MappingFeed.Osu;
-using Microsoft.EntityFrameworkCore;
+using MappingFeed.Data.Enums;
+using MappingFeed.Events.EmbedFactories;
 using Microsoft.Extensions.Options;
 using NetCord;
 using NetCord.Rest;
 using System.Globalization;
 using System.Text.Json.Nodes;
 
-namespace MappingFeed.Feed;
+namespace MappingFeed.Dispatchers.Events;
 
-public sealed class FeedSendingWorker(
-    IDbContextFactory<MappingFeedDbContext> dbContextFactory,
+public sealed class BeatmapEventsDispatcher(
+    IBeatmapEventService beatmapEventService,
+    ISubscribedFeedService subscribedFeedService,
     FeedEmbedFactory embedFactory,
     IOptions<FeedOptions> options,
     RestClient restClient,
-    ILogger<FeedSendingWorker> logger) : BackgroundService
+    ILogger<BeatmapEventsDispatcher> logger)
 {
     private const int MaxDispatchBatchSize = 10;
     private const int MinDispatchIntervalSeconds = 180;
 
     private readonly FeedOptions _options = options.Value;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await DispatchByFeedTypeAsync(FeedType.Map, stoppingToken);
-                await DispatchByFeedTypeAsync(FeedType.Group, stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(exception, "Failed while sending feed events.");
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(GetDispatchIntervalSeconds()), stoppingToken);
-        }
-    }
-
-    private async Task DispatchByFeedTypeAsync(FeedType feedType, CancellationToken cancellationToken)
-    {
-        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-
-        var subscriptions = await db.SubscribedChannels
-            .Where(x => x.FeedType == feedType)
-            .OrderBy(x => x.ChannelId)
-            .ToListAsync(cancellationToken);
-
-        foreach (var subscription in subscriptions)
-        {
-            if (feedType == FeedType.Map)
-                await DispatchBeatmapsetEventsAsync(db, subscription, cancellationToken);
-            else
-                await DispatchGroupEventsAsync(db, subscription, cancellationToken);
-        }
-    }
-
-    private async Task DispatchBeatmapsetEventsAsync(
-        MappingFeedDbContext db,
+    public async Task DispatchAsync(
         SubscribedChannel subscription,
         CancellationToken cancellationToken)
     {
@@ -72,14 +31,13 @@ public sealed class FeedSendingWorker(
         if (channel is null)
             return;
 
-        var pendingEvents = await db.BeatmapsetEvents
-            .Where(x => x.EventId > subscription.LastEventId)
-            .OrderBy(x => x.EventId)
-            .Take(GetDispatchBatchSize())
-            .ToListAsync(cancellationToken);
+        var pendingEvents = await beatmapEventService.GetPendingEventsAsync(
+            subscription.LastEventId,
+            GetDispatchBatchSize(),
+            cancellationToken);
         var allowedRulesets = FeedEnumExtensions.DeserializeRulesets(subscription.Rulesets);
         var allowedEventTypes = FeedEnumExtensions.DeserializeEventTypes(subscription.EventTypes);
-        var mergePlan = await BuildMapMergePlanAsync(db, pendingEvents, cancellationToken);
+        var mergePlan = await BuildMapMergePlanAsync(pendingEvents, cancellationToken);
 
         foreach (var pendingEvent in pendingEvents)
         {
@@ -88,13 +46,13 @@ public sealed class FeedSendingWorker(
 
             if (FeedVisibilityRules.ShouldSuppressFromPublicFeed(pendingEvent))
             {
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
+                await subscribedFeedService.AdvanceCursorAsync(subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
             if (mergePlan.NominationEventIdsToSuppress.Contains(pendingEvent.EventId))
             {
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
+                await subscribedFeedService.AdvanceCursorAsync(subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
@@ -116,7 +74,7 @@ public sealed class FeedSendingWorker(
                 }
 
                 if (shouldSave)
-                    await db.SaveChangesAsync(cancellationToken);
+                    await beatmapEventService.UpdateAsync(pendingEvent, cancellationToken);
             }
 
             var rawEventForRuleset = pendingEvent.RawEvent;
@@ -134,7 +92,7 @@ public sealed class FeedSendingWorker(
                     serializedRulesetsForDispatch,
                     rawEventForRuleset))
             {
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
+                await subscribedFeedService.AdvanceCursorAsync(subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
@@ -142,7 +100,7 @@ public sealed class FeedSendingWorker(
                 allowedEventTypes.Count > 0 &&
                 !allowedEventTypes.Contains(pendingEvent.EventType))
             {
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
+                await subscribedFeedService.AdvanceCursorAsync(subscription, pendingEvent.EventId, cancellationToken);
                 continue;
             }
 
@@ -157,7 +115,7 @@ public sealed class FeedSendingWorker(
                         .WithEmbeds([embed]),
                     cancellationToken: cancellationToken);
 
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
+                await subscribedFeedService.AdvanceCursorAsync(subscription, pendingEvent.EventId, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -185,7 +143,6 @@ public sealed class FeedSendingWorker(
     }
 
     private async Task<MapMergePlan> BuildMapMergePlanAsync(
-        MappingFeedDbContext db,
         IReadOnlyCollection<BeatmapsetEvent> pendingEvents,
         CancellationToken cancellationToken)
     {
@@ -224,12 +181,11 @@ public sealed class FeedSendingWorker(
                 x.Event.SetId == qualification.Event.SetId &&
                 x.Event.EventId < nominationCandidate.Event.EventId);
 
-            var hasEarlierNominationInDb = hasEarlierNominationInPending || await db.BeatmapsetEvents
-                .AnyAsync(
-                    x => x.EventType == FeedEventType.Nomination
-                         && x.SetId == qualification.Event.SetId
-                         && x.EventId < nominationCandidate.Event.EventId,
-                    cancellationToken);
+            var hasEarlierNominationInDb = hasEarlierNominationInPending ||
+                                           await beatmapEventService.HasEarlierNominationAsync(
+                                               qualification.Event.SetId,
+                                               nominationCandidate.Event.EventId,
+                                               cancellationToken);
 
             if (!hasEarlierNominationInDb)
                 continue;
@@ -261,61 +217,6 @@ public sealed class FeedSendingWorker(
         return null;
     }
 
-    private async Task DispatchGroupEventsAsync(
-        MappingFeedDbContext db,
-        SubscribedChannel subscription,
-        CancellationToken cancellationToken)
-    {
-        var channel = await GetTextChannelAsync(subscription.ChannelId, cancellationToken);
-        if (channel is null)
-            return;
-
-        var pendingEvents = await db.GroupEvents
-            .Where(x => x.EventId > subscription.LastEventId)
-            .OrderBy(x => x.EventId)
-            .Take(GetDispatchBatchSize())
-            .ToListAsync(cancellationToken);
-        var allowedGroupIds = FeedEnumExtensions.DeserializeGroupIds(subscription.GroupId);
-
-        foreach (var pendingEvent in pendingEvents)
-        {
-            if (pendingEvent.EventType == FeedEventType.GroupMove)
-            {
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
-                continue;
-            }
-
-            if (allowedGroupIds is not null && !allowedGroupIds.Contains(pendingEvent.GroupId))
-            {
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
-                continue;
-            }
-
-            try
-            {
-                var embed = await embedFactory.CreateGroupEventEmbedAsync(pendingEvent, cancellationToken);
-                var userUrl = $"https://osu.ppy.sh/users/{pendingEvent.UserId}";
-
-                await channel.SendMessageAsync(
-                    new MessageProperties()
-                        .WithContent(userUrl)
-                        .WithEmbeds([embed]),
-                    cancellationToken: cancellationToken);
-
-                await AdvanceSubscriptionCursorAsync(db, subscription, pendingEvent.EventId, cancellationToken);
-            }
-            catch (Exception exception)
-            {
-                logger.LogError(
-                    exception,
-                    "Failed sending group event {EventId} to channel {ChannelId}.",
-                    pendingEvent.EventId,
-                    subscription.ChannelId);
-                break;
-            }
-        }
-    }
-
     private async Task<TextChannel?> GetTextChannelAsync(long channelId, CancellationToken cancellationToken)
     {
         try
@@ -343,16 +244,6 @@ public sealed class FeedSendingWorker(
     private int GetDispatchIntervalSeconds()
     {
         return Math.Max(_options.DispatchIntervalSeconds, MinDispatchIntervalSeconds);
-    }
-
-    private static async Task AdvanceSubscriptionCursorAsync(
-        MappingFeedDbContext db,
-        SubscribedChannel subscription,
-        long eventId,
-        CancellationToken cancellationToken)
-    {
-        subscription.LastEventId = eventId;
-        await db.SaveChangesAsync(cancellationToken);
     }
 
     private sealed record MapEventInfo(BeatmapsetEvent Event, DateTimeOffset? CreatedAt);

@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace MappingFeed.Osu;
+namespace MappingFeed.Data.TransitionalRecords;
 
 public sealed record OsuBeatmapsetEventsPayload(
     IReadOnlyList<OsuBeatmapsetEventsEvent> Events,
