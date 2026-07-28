@@ -38,26 +38,46 @@ It also exposes a minimal HTTP API for recent map/group event views.
 - `/feed-status`
   - Shows active subscriptions and filters for the current channel.
 
-## Architecture
+## Project Structure
 
-- `EventFetcherWorker`
-  - Polls osu! endpoints and writes new events into local DB.
-- `FeedingDispatcherWorker`
-  - Reads pending events per subscription, applies filters, sends Discord messages, advances `LastEventId` cursor.
-- `FeedEmbedFactory`
-  - Renders embeds from shared feed event view entries.
-- `BeatmapEventService` / `GroupEventService`
-  - Own feed-specific application operations, including event persistence, dispatch reads, cursor-paginated API reads, and view-entry projection.
-- `Repositories/*`
-  - Lower-level EF Core access for beatmap events, group events, and subscribed feeds.
-- Minimal API handlers (`Api/Handlers/FeedEventsHandlers`)
-  - Exposes read-only recent-event endpoints.
-- OpenAPI + Scalar
-  - Serves OpenAPI JSON and Scalar API reference UI.
-- `MappingFeedDbContext`
-  - Owns the EF entity mapping for the local SQLite store.
-- `Services/Backfill`
-  - Maintains SQLite schema/indexes and runs historical API backfills.
+The `MappingFeed` solution contains five projects:
+
+| Project | Responsibility | Depends on |
+| --- | --- | --- |
+| `MappingFeed.Common` | Shared configuration, entities, records, enums, and interfaces | None |
+| `MappingFeed.Data` | EF Core, SQLite repositories, visibility rules, and database backfills | `Common` |
+| `MappingFeed.Scraper` | osu! authentication, API access, and event fetching | `Common` |
+| `MappingFeed.Discord` | Slash commands, setup interactions, event dispatch, and embeds | `Common`, `Data` |
+| `MappingFeed.Web` | Application host, HTTP API, services, and background workers | `Common`, `Data`, `Scraper`, `Discord` |
+
+`MappingFeed.Web` is the executable project. It starts the Discord bot and HTTP
+API, registers the other projects, and runs the fetch, dispatch, and backfill
+workers.
+
+### Event Flow
+
+1. `MappingFeed.Web/Workers/EventFetcherWorker` runs every
+   `Feed.PollIntervalSeconds` and invokes `BeatmapEventsFetcher` and
+   `GroupEventsFetcher` from `MappingFeed.Scraper`.
+2. The fetchers use `IOsuApiService`, implemented by
+   `MappingFeed.Scraper/Services/Osu/OsuApiService`, to request events and related
+   metadata from osu!. They parse the responses into `BeatmapsetEvent` and
+   `GroupEvent` entities and enrich them with map, user, group, and ruleset data.
+3. `BeatmapEventService` and `GroupEventService` remove events already present in
+   the database. Their repositories in `MappingFeed.Data/Repositories` then use
+   `MappingFeedDbContext` to write the new entities to SQLite.
+4. `MappingFeed.Web/Workers/FeedingDispatcherWorker` periodically calls
+   `FeedEventsDispatcher`. It loads the map and group subscriptions through
+   `SubscribedFeedService`, then routes each subscription to
+   `BeatmapEventsDispatcher` or `GroupEventsDispatcher`.
+5. Each dispatcher queries events with an `EventId` greater than the
+   subscription's `LastEventId`. It applies the subscription's event type,
+   ruleset, or group filters before using `FeedEmbedFactory` to build a Discord
+   embed.
+6. The dispatcher sends the message to the subscribed Discord channel through
+   NetCord's `RestClient`. `SubscribedFeedService` advances `LastEventId` after a
+   successful send or an intentional filter skip. If sending fails, the cursor
+   stays unchanged and the next dispatch cycle retries the event.
 
 ## Requirements
 
@@ -69,8 +89,8 @@ It also exposes a minimal HTTP API for recent map/group event views.
 
 Configuration is loaded from:
 
-1. `appsettings.json` (optional)
-2. `appsettings.{Environment}.json` (optional)
+1. `MappingFeed.Web/appsettings.json` (optional)
+2. `MappingFeed.Web/appsettings.{Environment}.json` (optional)
 3. Environment variables (override JSON)
 
 Main sections:
@@ -88,9 +108,11 @@ Main sections:
   - `DispatchBatchSize` (configured value is clamped to max `10` in sender)
   - `ApiCacheMinutes` (default `10`, clamped in API client to `5..20`)
 
-Use [`appsettings.example.json`](/home/maoto/dev/MappingFeed/appsettings.example.json) as template.
+Use [`MappingFeed.Web/appsettings.example.json`](MappingFeed.Web/appsettings.example.json) as a template.
 
 ## Local Run
+
+Run the following commands from the repository root.
 
 1. Create environment variables (recommended), for example:
 
@@ -105,7 +127,7 @@ export Osu__BaseUrl="https://osu.ppy.sh"
 2. Run:
 
 ```bash
-dotnet run
+dotnet run --project MappingFeed.Web
 ```
 
 3. Query recent events:
@@ -131,7 +153,13 @@ dotnet build
 
 ## Docker
 
-1. Copy environment file:
+The Docker hosting files live in `MappingFeed.Web`. Change to that directory:
+
+```bash
+cd MappingFeed.Web
+```
+
+1. Copy the environment file:
 
 ```bash
 cp .env.example .env
@@ -149,7 +177,8 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-SQLite is persisted through the volume defined in [`docker-compose.yml`](/home/maoto/dev/MappingFeed/docker-compose.yml):
+SQLite is persisted through the volume defined in
+[`MappingFeed.Web/docker-compose.yml`](MappingFeed.Web/docker-compose.yml):
 
 - host: `${HOME}/.local/share/mappingfeed`
 - container: `/root/.local/share/mappingfeed`
