@@ -1,0 +1,108 @@
+using MappingFeed.Data;
+using MappingFeed.Discord;
+using MappingFeed.Scraper;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using System.Text.Json.Serialization;
+using MappingFeed.Common.Config;
+using MappingFeed.Data.DependencyInjection;
+using MappingFeed.Data.Services.Backfill;
+using MappingFeed.Discord.Commands;
+using MappingFeed.Discord.DependencyInjection;
+using MappingFeed.Scraper.DependencyInjection;
+using MappingFeed.Web.Api.Handlers;
+using MappingFeed.Web.DependencyInjection;
+using NetCord.Hosting.Gateway;
+using NetCord.Hosting.Services.ApplicationCommands;
+using NetCord.Gateway;
+using NetCord.Services.ApplicationCommands;
+using NetCord.Hosting.Services.ComponentInteractions;
+using Scalar.AspNetCore;
+
+var builder = WebApplication.CreateBuilder(args);
+const string FrontendCorsPolicy = "FrontendCors";
+
+var environmentFileName = $"appsettings.{builder.Environment.EnvironmentName}.json";
+
+builder.Configuration.Sources.Clear();
+builder.Configuration
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddJsonFile(environmentFileName, optional: true, reloadOnChange: true)
+    .AddEnvironmentVariables();
+
+var configuredDiscordToken = builder.Configuration[$"{DiscordOptions.SectionName}:Token"];
+if (string.IsNullOrWhiteSpace(configuredDiscordToken))
+{
+    throw new InvalidOperationException(
+        $"Discord token is empty for environment '{builder.Environment.EnvironmentName}'. " +
+        $"Set '{DiscordOptions.SectionName}:Token' in '{environmentFileName}' " +
+        $"or via environment variable '{DiscordOptions.SectionName}__Token'.");
+}
+
+builder.Services.Configure<DiscordOptions>(builder.Configuration.GetSection(DiscordOptions.SectionName));
+builder.Services.Configure<OsuOptions>(builder.Configuration.GetSection(OsuOptions.SectionName));
+builder.Services.Configure<FeedOptions>(builder.Configuration.GetSection(FeedOptions.SectionName));
+builder.Services.AddOpenApi();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(FrontendCorsPolicy, policy =>
+    {
+        policy
+            .WithOrigins(
+                "http://localhost:5173",
+                "https://mappingfeed.maot.dev")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+
+builder.Services.AddDiscordGateway((options, serviceProvider) =>
+{
+    var discordOptions = serviceProvider.GetRequiredService<IOptions<DiscordOptions>>().Value;
+    options.Token = discordOptions.Token;
+    options.Intents = GatewayIntents.Guilds;
+});
+
+builder.Services.AddApplicationCommands();
+builder.Services.AddComponentInteractions();
+
+var localAppDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+if (string.IsNullOrWhiteSpace(localAppDataPath))
+    throw new InvalidOperationException("Could not resolve local application data path.");
+
+var databaseDirectory = Path.Combine(localAppDataPath, "mappingfeed");
+Directory.CreateDirectory(databaseDirectory);
+var databasePath = Path.Combine(databaseDirectory, "db.sqlite");
+
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
+
+builder.Services
+    .AddMappingFeedData(databasePath)
+    .AddMappingFeedScraper()
+    .AddMappingFeedDiscord()
+    .AddMappingFeedWeb();
+
+var app = builder.Build();
+
+await using (var scope = app.Services.CreateAsyncScope())
+{
+    var dbContextFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<MappingFeedDbContext>>();
+    await using var db = await dbContextFactory.CreateDbContextAsync();
+    await DatabaseSchemaUpdater.EnsureUpdatedAsync(db);
+}
+
+app.Services
+    .GetRequiredService<IApplicationCommandService>()
+    .AddModule<FeedCommandModule>();
+app.AddComponentInteractionModule<FeedSetupComponentModule>();
+
+app.UseCors(FrontendCorsPolicy);
+
+app.MapFeedEventsApi();
+app.MapOpenApi();
+app.MapScalarApiReference();
+
+await app.RunAsync();

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NetCord" Version="1.0.0-alpha.480" />
+    <PackageReference Include="NetCord.Hosting" Version="1.0.0-alpha.480" />
+    <PackageReference Include="NetCord.Hosting.Services" Version="1.0.0-alpha.480" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MappingFeed.Common\MappingFeed.Common.csproj" />
+    <ProjectReference Include="..\MappingFeed.Data\MappingFeed.Data.csproj" />
+  </ItemGroup>
+
+</Project>
