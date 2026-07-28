@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="MappingFeed.Common/MappingFeed.Common.csproj" />
+  <Project Path="MappingFeed.Data/MappingFeed.Data.csproj" />
+  <Project Path="MappingFeed.Discord/MappingFeed.Discord.csproj" />
+  <Project Path="MappingFeed.Scraper/MappingFeed.Scraper.csproj" />
+  <Project Path="MappingFeed.Web/MappingFeed.Web.csproj" />
+</Solution>

@@ -1,0 +1,18 @@
+using MappingFeed.Common.Data.Enums;
+
+namespace MappingFeed.Common.Data.Entities;
+
+public sealed class SubscribedChannel
+{
+    public long ChannelId { get; set; }
+
+    public FeedType FeedType { get; set; }
+
+    public long LastEventId { get; set; }
+
+    public string? Rulesets { get; set; }
+
+    public string? EventTypes { get; set; }
+
+    public string? GroupId { get; set; }
+}

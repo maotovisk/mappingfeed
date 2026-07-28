@@ -2,7 +2,7 @@ services:
   mappingfeed-bot:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: MappingFeed.Web/Dockerfile
     container_name: mappingfeed-bot
     restart: unless-stopped
     environment:
