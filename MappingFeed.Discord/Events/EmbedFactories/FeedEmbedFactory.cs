@@ -52,14 +52,12 @@ public sealed partial class FeedEmbedFactory(
         var mapperLink = mapData.MapperUserId is null
             ? EscapeDiscordMarkdown(mapData.MapperName)
             : BuildDiscordLink(mapData.MapperName, $"https://osu.ppy.sh/users/{mapData.MapperUserId.Value}");
-        var modeTags = mapData.Modes.Count == 0
-            ? "[osu]"
-            : string.Join(string.Empty, mapData.Modes.Select(x => $"[{x}]"));
+        var modeTags = BuildModeEmojis(mapData.Modes.Count == 0 ? ["osu"] : mapData.Modes);
 
         var lines = new List<string>
         {
             $"**{beatmapsetTitleLink}**",
-            $"Mapped by {mapperLink} **{modeTags}**",
+            $"Mapped by {mapperLink} {modeTags}",
         };
 
         var rankedHistoryLine = BuildRankedHistoryLine(mapData.RankedHistory);
@@ -112,7 +110,7 @@ public sealed partial class FeedEmbedFactory(
         };
 
         if (groupData.Playmodes.Count > 0)
-            lines.Add($"for **[{string.Join(", ", groupData.Playmodes)}]**");
+            lines.Add($"for {BuildModeEmojis(groupData.Playmodes)}");
 
         embed.WithDescription(string.Join('\n', lines));
 
@@ -169,6 +167,20 @@ public sealed partial class FeedEmbedFactory(
         FeedEventType.GroupRemove => new Color(201, 164, 255),
         FeedEventType.GroupMove => new Color(52, 152, 219),
         _ => new Color(149, 165, 166),
+    };
+
+    private static string BuildModeEmojis(IEnumerable<string> modes)
+    {
+        return string.Join(' ', modes.Select(GetModeEmoji).Distinct());
+    }
+
+    private static string GetModeEmoji(string mode) => mode.Trim().ToLowerInvariant() switch
+    {
+        "osu" => "<:osu:1575542963700760817>",
+        "taiko" => "<:taiko:1575542961389830277>",
+        "catch" or "fruits" or "ctb" => "<:catch:1575542959540142132>",
+        "mania" => "<:mania:1575542957413634068>",
+        _ => $"[{mode}]",
     };
 
     private static string GetEventEmoji(FeedEventType eventType) => eventType switch
