@@ -51,6 +51,8 @@ public static class DatabaseSchemaUpdater
         await BackfillNullTextColumnAsync(db, "group_events", "raw_event", "{}", cancellationToken);
         await BackfillNullTextColumnAsync(db, "beatmapset_events", "raw_event", "{}", cancellationToken);
         await BackfillBeatmapsetEventsFromRawEventAsync(db, cancellationToken);
+        await ReclassifyBanchoBotDisqualificationsAsUnrankedAsync(db, cancellationToken);
+        await ReclassifyBanchoBotDisqualificationsInRankedHistoryAsync(db, cancellationToken);
         await BackfillBeatmapsetRulesetsFromOtherEventsAsync(db, cancellationToken);
         await BackfillGroupEventsFromRawEventAsync(db, cancellationToken);
 
@@ -105,6 +107,93 @@ public static class DatabaseSchemaUpdater
             alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnType};";
             await alter.ExecuteNonQueryAsync(token);
         });
+    }
+
+    /// <summary>
+    /// osu! records unranks as disqualifications triggered by BanchoBot. Rows stored before that rule
+    /// existed are reclassified here; the update is idempotent. Already-dispatched rows are not re-sent,
+    /// since subscription cursors are past them.
+    /// </summary>
+    private static async Task ReclassifyBanchoBotDisqualificationsAsUnrankedAsync(
+        MappingFeedDbContext db,
+        CancellationToken cancellationToken)
+    {
+        await db.BeatmapsetEvents
+            .Where(x =>
+                x.EventType == FeedEventType.Disqualification &&
+                x.TriggeredBy == BeatmapsetEventClassification.BanchoBotUserId)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(x => x.EventType, FeedEventType.Unranked),
+                cancellationToken);
+    }
+
+    /// <summary>
+    /// Same reclassification as <see cref="ReclassifyBanchoBotDisqualificationsAsUnrankedAsync"/>, applied to
+    /// the activity snapshots stored on Ranked events. Idempotent.
+    /// </summary>
+    private static async Task ReclassifyBanchoBotDisqualificationsInRankedHistoryAsync(
+        MappingFeedDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var banchoBotUserIdMarker = $"\"userId\":{BeatmapsetEventClassification.BanchoBotUserId},";
+        var rows = await db.BeatmapsetEvents
+            .Where(x =>
+                x.EventType == FeedEventType.Ranked &&
+                x.RankedHistoryJson != null &&
+                x.RankedHistoryJson.Contains(banchoBotUserIdMarker))
+            .ToListAsync(cancellationToken);
+
+        var changed = false;
+        foreach (var row in rows)
+        {
+            JsonArray? history;
+            try
+            {
+                history = JsonNode.Parse(row.RankedHistoryJson!) as JsonArray;
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (history is null)
+                continue;
+
+            var rowChanged = false;
+            foreach (var entry in history.OfType<JsonObject>())
+            {
+                if (entry["userId"] is not JsonValue userIdValue ||
+                    !userIdValue.TryGetValue<long>(out var userId) ||
+                    userId != BeatmapsetEventClassification.BanchoBotUserId ||
+                    entry["action"] is not JsonValue actionValue)
+                {
+                    continue;
+                }
+
+                // Snapshots serialize the action as a number; accept the name too, and keep the same form.
+                if (actionValue.TryGetValue<int>(out var actionNumber) &&
+                    actionNumber == (int)FeedEventType.Disqualification)
+                {
+                    entry["action"] = (int)FeedEventType.Unranked;
+                    rowChanged = true;
+                }
+                else if (actionValue.TryGetValue<string>(out var actionName) &&
+                         string.Equals(actionName, nameof(FeedEventType.Disqualification), StringComparison.OrdinalIgnoreCase))
+                {
+                    entry["action"] = nameof(FeedEventType.Unranked);
+                    rowChanged = true;
+                }
+            }
+
+            if (!rowChanged)
+                continue;
+
+            row.RankedHistoryJson = history.ToJsonString();
+            changed = true;
+        }
+
+        if (changed)
+            await db.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task BackfillNullTextColumnAsync(
@@ -737,6 +826,7 @@ public static class DatabaseSchemaUpdater
                     (x.EventType == FeedEventType.Nomination ||
                      x.EventType == FeedEventType.Qualification ||
                      x.EventType == FeedEventType.Disqualification ||
+                     x.EventType == FeedEventType.Unranked ||
                      x.EventType == FeedEventType.NominationReset))
                 .OrderBy(x => x.EventId)
                 .Take(context.BatchSize)
@@ -1020,7 +1110,7 @@ public static class DatabaseSchemaUpdater
                     return praiseOrHypeMessage;
             }
 
-            if (beatmapsetEvent.EventType is FeedEventType.Disqualification or FeedEventType.NominationReset)
+            if (beatmapsetEvent.EventType is FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset)
             {
                 var discussionMessageByUser = await context.InvokeAsync(
                     (api, ct) => api.GetLatestDiscussionMessageByUserAsync(
@@ -1053,7 +1143,7 @@ public static class DatabaseSchemaUpdater
 
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))
@@ -1083,7 +1173,7 @@ public static class DatabaseSchemaUpdater
             .Select(x => new
             {
                 Event = x,
-                Type = MapHistoryEventType(x.Type),
+                Type = MapHistoryEventType(x.Type, x.UserId),
             })
             .Where(x => x.Type is not null)
             .Select(x => new RankedHistoryEvent(x.Event, x.Type!.Value))
@@ -1244,13 +1334,15 @@ public static class DatabaseSchemaUpdater
         return delta <= maxGap;
     }
 
-    private static FeedEventType? MapHistoryEventType(string rawType)
+    private static FeedEventType? MapHistoryEventType(string rawType, long? userId)
     {
         return rawType.Trim().ToLowerInvariant() switch
         {
             "nominate" => FeedEventType.Nomination,
             "nomination_reset" => FeedEventType.NominationReset,
             "qualify" => FeedEventType.Qualification,
+            // osu! records unranks as disqualifications by BanchoBot.
+            "disqualify" when userId == BeatmapsetEventClassification.BanchoBotUserId => FeedEventType.Unranked,
             "disqualify" => FeedEventType.Disqualification,
             _ => null,
         };

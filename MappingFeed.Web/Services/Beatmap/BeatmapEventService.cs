@@ -303,7 +303,7 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
 
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))

@@ -183,7 +183,7 @@ public sealed class BeatmapEventsFetcher(
                     return praiseOrHypeMessage;
             }
 
-            if (parsedEvent.EventType is FeedEventType.Disqualification or FeedEventType.NominationReset)
+            if (parsedEvent.EventType is FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset)
             {
                 var discussionMessageByUser = await osuApiService.GetLatestDiscussionMessageByUserAsync(
                     parsedEvent.SetId,
@@ -249,7 +249,7 @@ public sealed class BeatmapEventsFetcher(
             .Select(x => new
             {
                 Event = x,
-                Type = MapHistoryEventType(x.Type),
+                Type = MapHistoryEventType(x.Type, x.UserId),
             })
             .Where(x => x.Type is not null)
             .Select(x => new RankedHistoryEvent(x.Event, x.Type!.Value))
@@ -404,13 +404,15 @@ public sealed class BeatmapEventsFetcher(
         return delta <= maxGap;
     }
 
-    private static FeedEventType? MapHistoryEventType(string rawType)
+    private static FeedEventType? MapHistoryEventType(string rawType, long? userId)
     {
         return rawType.Trim().ToLowerInvariant() switch
         {
             "nominate" => FeedEventType.Nomination,
             "nomination_reset" => FeedEventType.NominationReset,
             "qualify" => FeedEventType.Qualification,
+            // osu! records unranks as disqualifications by BanchoBot
+            "disqualify" when userId == BeatmapsetEventClassification.BanchoBotUserId => FeedEventType.Unranked,
             "disqualify" => FeedEventType.Disqualification,
             _ => null,
         };
@@ -512,7 +514,7 @@ public sealed class BeatmapEventsFetcher(
 
     private static BeatmapsetEvent? ParseBeatmapsetEvent(OsuBeatmapsetEventsEvent payload)
     {
-        var eventType = MapBeatmapsetEventType(payload.Type);
+        var eventType = BeatmapsetEventClassification.FromOsuEventType(payload.Type, payload.UserId);
         if (eventType is null)
             return null;
 
@@ -533,20 +535,6 @@ public sealed class BeatmapEventsFetcher(
             Rulesets = TrySerializeRulesets(payload.RawJson),
             RawEvent = payload.RawJson,
             EventId = payload.Id,
-        };
-    }
-
-    private static FeedEventType? MapBeatmapsetEventType(string rawType)
-    {
-        return rawType.Trim().ToLowerInvariant() switch
-        {
-            "nominate" => FeedEventType.Nomination,
-            "nomination_reset" => FeedEventType.NominationReset,
-            "qualify" => FeedEventType.Qualification,
-            "disqualify" => FeedEventType.Disqualification,
-            "rank" => FeedEventType.Ranked,
-            "unrank" => FeedEventType.Unranked,
-            _ => null,
         };
     }
 
@@ -679,7 +667,7 @@ public sealed class BeatmapEventsFetcher(
 
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))
