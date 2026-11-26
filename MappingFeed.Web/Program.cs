@@ -42,6 +42,7 @@ if (string.IsNullOrWhiteSpace(configuredDiscordToken))
 builder.Services.Configure<DiscordOptions>(builder.Configuration.GetSection(DiscordOptions.SectionName));
 builder.Services.Configure<OsuOptions>(builder.Configuration.GetSection(OsuOptions.SectionName));
 builder.Services.Configure<FeedOptions>(builder.Configuration.GetSection(FeedOptions.SectionName));
+builder.Services.Configure<EmojiOptions>(builder.Configuration.GetSection(EmojiOptions.SectionName));
 builder.Services.AddOpenApi();
 builder.Services.AddCors(options =>
 {

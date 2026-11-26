@@ -1,9 +1,12 @@
 using System.Text.RegularExpressions;
+using MappingFeed.Common.Config;
 using MappingFeed.Common.Data.Entities;
 using MappingFeed.Common.Data.Enums;
 using MappingFeed.Common.Data.TransitionalRecords;
+using MappingFeed.Common.Extensions;
 using MappingFeed.Common.Services.Beatmap;
 using MappingFeed.Common.Services.Group;
+using Microsoft.Extensions.Options;
 using NetCord;
 using NetCord.Rest;
 
@@ -11,8 +14,11 @@ namespace MappingFeed.Discord.Events.EmbedFactories;
 
 public sealed partial class FeedEmbedFactory(
     IBeatmapEventService beatmapEventService,
-    IGroupEventService groupEventService)
+    IGroupEventService groupEventService,
+    IOptions<EmojiOptions> emojiOptions)
 {
+    private readonly EmojiOptions _emojis = emojiOptions.Value;
+
     public async Task<EmbedProperties> CreateBeatmapsetEventEmbedAsync(
         BeatmapsetEvent beatmapsetEvent,
         CancellationToken cancellationToken)
@@ -29,7 +35,7 @@ public sealed partial class FeedEmbedFactory(
         return CreateEmbed(eventView);
     }
 
-    private static EmbedProperties CreateEmbed(FeedEventViewEntry eventView)
+    private EmbedProperties CreateEmbed(FeedEventViewEntry eventView)
     {
         var embed = new EmbedProperties()
             .WithColor(GetColor(eventView.EventType));
@@ -42,7 +48,7 @@ public sealed partial class FeedEmbedFactory(
         return embed;
     }
 
-    private static void ApplyMapVisuals(
+    private void ApplyMapVisuals(
         EmbedProperties embed,
         FeedEventViewEntry eventView,
         FeedMapEventViewData mapData)
@@ -84,7 +90,7 @@ public sealed partial class FeedEmbedFactory(
         embed.WithFooter(footer);
     }
 
-    private static void ApplyGroupVisuals(
+    private void ApplyGroupVisuals(
         EmbedProperties embed,
         FeedEventViewEntry eventView,
         FeedGroupEventViewData groupData)
@@ -101,7 +107,7 @@ public sealed partial class FeedEmbedFactory(
             FeedEventType.GroupRemove => "Removed",
             _ => eventView.EventType.ToDisplayName(),
         };
-        
+
         var lines = new List<string>
         {
             $"{GetEventEmoji(eventView.EventType)} **{label}** ({ToDiscordRelative(eventView.CreatedAt)})",
@@ -118,7 +124,7 @@ public sealed partial class FeedEmbedFactory(
             embed.WithThumbnail(new EmbedThumbnailProperties(eventView.Actor.AvatarUrl!));
     }
 
-    private static string? BuildRankedHistoryLine(IReadOnlyList<FeedMapHistoryAction> rankedHistory, int earlierCount)
+    private string? BuildRankedHistoryLine(IReadOnlyList<FeedMapHistoryAction> rankedHistory, int earlierCount)
     {
         if (rankedHistory.Count == 0)
             return null;
@@ -175,32 +181,32 @@ public sealed partial class FeedEmbedFactory(
         _ => new Color(149, 165, 166),
     };
 
-    private static string BuildModeEmojis(IEnumerable<string> modes)
+    private string BuildModeEmojis(IEnumerable<string> modes)
     {
         return string.Join(' ', modes.Select(GetModeEmoji).Distinct());
     }
 
-    private static string GetModeEmoji(string mode) => mode.Trim().ToLowerInvariant() switch
+    private string GetModeEmoji(string mode) => (mode.Trim().ToLowerInvariant() switch
     {
-        "osu" => "<:osu:1575542963700760817>",
-        "taiko" => "<:taiko:1575542961389830277>",
-        "catch" or "fruits" or "ctb" => "<:catch:1575542959540142132>",
-        "mania" => "<:mania:1575542957413634068>",
-        _ => $"[{mode}]",
-    };
+        "osu" => _emojis.ModeOsu,
+        "taiko" => _emojis.ModeTaiko,
+        "catch" or "fruits" or "ctb" => _emojis.ModeCatch,
+        "mania" => _emojis.ModeMania,
+        _ => null,
+    }).OrDefault($"**[{mode}]**");
 
-    private static string GetEventEmoji(FeedEventType eventType) => eventType switch
+    private string GetEventEmoji(FeedEventType eventType) => eventType switch
     {
-        FeedEventType.Nomination => "💭",
-        FeedEventType.NominationReset => "🗯️",
-        FeedEventType.Qualification => "❤️",
-        FeedEventType.Disqualification => "💔",
-        FeedEventType.Ranked => "💖",
-        FeedEventType.Unranked => "💥",
-        FeedEventType.GroupAdd => "<:groupadd:1575550935910981642>",
-        FeedEventType.GroupRemove => "<:groupremove:1575550931293179994>",
-        FeedEventType.GroupMove => "<:groupmove:1575550933700583474>",
-        _ => "•",
+        FeedEventType.Nomination => _emojis.Nomination,
+        FeedEventType.NominationReset => _emojis.NominationReset,
+        FeedEventType.Qualification => _emojis.Qualification,
+        FeedEventType.Disqualification => _emojis.Disqualification,
+        FeedEventType.Ranked => _emojis.Ranked,
+        FeedEventType.Unranked => _emojis.Unranked,
+        FeedEventType.GroupAdd => _emojis.GroupAdd,
+        FeedEventType.GroupRemove => _emojis.GroupRemove,
+        FeedEventType.GroupMove => _emojis.GroupMove,
+        _ => _emojis.Fallback,
     };
 
     private static string GetMapEventDisplayName(FeedEventType eventType) => eventType switch
