@@ -10,9 +10,9 @@ public sealed class EmojiOptions
 {
     public const string SectionName = "Emojis";
 
-    public string Nomination { get; set => field = value.OrDefault(field); } = "💬";
+    public string Nomination { get; set => field = value.OrDefault(field); } = "💭";
 
-    public string NominationReset { get; set => field = value.OrDefault(field); } = "↩️";
+    public string NominationReset { get; set => field = value.OrDefault(field); } = "🗯️";
 
     public string Qualification { get; set => field = value.OrDefault(field); } = "❤️";
 
@@ -20,7 +20,7 @@ public sealed class EmojiOptions
 
     public string Ranked { get; set => field = value.OrDefault(field); } = "💖";
 
-    public string Unranked { get; set => field = value.OrDefault(field); } = "🟠";
+    public string Unranked { get; set => field = value.OrDefault(field); } = "💥";
 
     public string GroupAdd { get; set => field = value.OrDefault(field); } = "👾";
 
