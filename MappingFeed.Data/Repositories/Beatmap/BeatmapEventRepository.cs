@@ -60,6 +60,19 @@ public sealed class BeatmapEventRepository(IDbContextFactory<MappingFeedDbContex
             cancellationToken);
     }
 
+    public async Task<IReadOnlyList<BeatmapsetEvent>> GetEventsForSetAsync(
+        long setId,
+        CancellationToken cancellationToken)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+        return await db.BeatmapsetEvents
+            .AsNoTracking()
+            .Where(x => x.SetId == setId)
+            .OrderBy(x => x.EventId)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task UpdateAsync(BeatmapsetEvent beatmapsetEvent, CancellationToken cancellationToken)
     {
         await using var db = await dbContextFactory.CreateDbContextAsync(cancellationToken);

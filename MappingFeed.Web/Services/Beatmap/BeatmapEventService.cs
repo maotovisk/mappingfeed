@@ -54,6 +54,13 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
         return repository.HasEarlierNominationAsync(setId, beforeEventId, cancellationToken);
     }
 
+    public Task<IReadOnlyList<BeatmapsetEvent>> GetEventsForSetAsync(
+        long setId,
+        CancellationToken cancellationToken)
+    {
+        return repository.GetEventsForSetAsync(setId, cancellationToken);
+    }
+
     public Task UpdateAsync(BeatmapsetEvent beatmapsetEvent, CancellationToken cancellationToken)
     {
         return repository.UpdateAsync(beatmapsetEvent, cancellationToken);

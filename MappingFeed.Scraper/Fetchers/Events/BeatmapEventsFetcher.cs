@@ -17,7 +17,7 @@ public sealed class BeatmapEventsFetcher(
     IBeatmapEventService beatmapEventService,
     IOsuApiService osuApiService,
     IOptions<FeedOptions> options,
-    ILogger<BeatmapEventsFetcher> logger)
+    ILogger<BeatmapEventsFetcher> logger) : IBeatmapsetEventsFetcher
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly FeedOptions _options = options.Value;
@@ -27,7 +27,36 @@ public sealed class BeatmapEventsFetcher(
         logger.LogInformation("Fetching beatmapset events.");
         var payload = await osuApiService.GetBeatmapEventsAsync(_options.EventsBatchSize, cancellationToken);
 
-        var parsedEvents = payload.Events
+        var newEvents = await ProcessAndSaveAsync(payload.Events, payload.Users, cancellationToken);
+        if (newEvents.Count == 0)
+            return;
+
+        logger.LogInformation("Fetched {Count} beatmapset events.", newEvents.Count);
+    }
+
+    public async Task<int> FetchBeatmapsetAsync(long setId, CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Fetching full event history for beatmapset {SetId}.", setId);
+        var history = await osuApiService.GetCompleteBeatmapsetEventHistoryAsync(setId, cancellationToken);
+
+        // The history endpoint doesn't return the users list; enrichment falls back to user lookups.
+        var newEvents = await ProcessAndSaveAsync(history, [], cancellationToken);
+
+        logger.LogInformation(
+            "Beatmapset {SetId}: {Total} event(s) from osu!, {New} new.",
+            setId,
+            history.Count,
+            newEvents.Count);
+
+        return newEvents.Count;
+    }
+
+    private async Task<IReadOnlyList<BeatmapsetEvent>> ProcessAndSaveAsync(
+        IReadOnlyList<OsuBeatmapsetEventsEvent> sourceEvents,
+        IReadOnlyList<OsuBeatmapsetEventsUser> sourceUsers,
+        CancellationToken cancellationToken)
+    {
+        var parsedEvents = sourceEvents
             .Select(ParseBeatmapsetEvent)
             .Where(x => x is not null)
             .Select(x => x!)
@@ -35,16 +64,12 @@ public sealed class BeatmapEventsFetcher(
             .ToList();
 
         if (parsedEvents.Count == 0)
-            return;
+            return [];
 
-        CoalesceQualificationWithNomination(parsedEvents, payload.Events);
-        await EnrichBeatmapsetEventsAsync(parsedEvents, payload.Events, payload.Users, cancellationToken);
+        CoalesceQualificationWithNomination(parsedEvents, sourceEvents);
+        await EnrichBeatmapsetEventsAsync(parsedEvents, sourceEvents, sourceUsers, cancellationToken);
 
-        var newEvents = await beatmapEventService.SaveNewEventsAsync(parsedEvents, cancellationToken);
-        if (newEvents.Count == 0)
-            return;
-
-        logger.LogInformation("Fetched {Count} beatmapset events.", newEvents.Count);
+        return await beatmapEventService.SaveNewEventsAsync(parsedEvents, cancellationToken);
     }
 
     private async Task EnrichBeatmapsetEventsAsync(

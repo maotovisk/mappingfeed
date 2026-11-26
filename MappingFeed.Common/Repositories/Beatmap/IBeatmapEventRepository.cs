@@ -13,6 +13,8 @@ public interface IBeatmapEventRepository
 
     Task<bool> HasEarlierNominationAsync(long setId, long beforeEventId, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<BeatmapsetEvent>> GetEventsForSetAsync(long setId, CancellationToken cancellationToken);
+
     Task UpdateAsync(BeatmapsetEvent beatmapsetEvent, CancellationToken cancellationToken);
 
     Task<List<BeatmapsetEvent>> QueryRecentAsync(

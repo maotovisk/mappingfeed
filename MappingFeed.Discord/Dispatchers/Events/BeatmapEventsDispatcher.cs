@@ -62,24 +62,10 @@ public sealed class BeatmapEventsDispatcher(
             }
 
             if (pendingEvent.EventType == FeedEventType.Qualification &&
-                hasMergedNomination)
+                hasMergedNomination &&
+                ApplyMergedNomination(pendingEvent, mergedNomination!))
             {
-                var shouldSave = false;
-
-                if (pendingEvent.TriggeredBy is null && mergedNomination!.TriggeredBy is not null)
-                {
-                    pendingEvent.TriggeredBy = mergedNomination.TriggeredBy;
-                    shouldSave = true;
-                }
-
-                if (string.IsNullOrWhiteSpace(pendingEvent.Message) && !string.IsNullOrWhiteSpace(mergedNomination!.Message))
-                {
-                    pendingEvent.Message = mergedNomination.Message;
-                    shouldSave = true;
-                }
-
-                if (shouldSave)
-                    await beatmapEventService.UpdateAsync(pendingEvent, cancellationToken);
+                await beatmapEventService.UpdateAsync(pendingEvent, cancellationToken);
             }
 
             var rawEventForRuleset = pendingEvent.RawEvent;
@@ -132,6 +118,78 @@ public sealed class BeatmapEventsDispatcher(
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Dev tool: sends embeds for every event of a beatmapset that the public feed would post,
+    /// ignoring subscription filters. Does not touch subscription cursors or persist merges.
+    /// </summary>
+    public async Task<BeatmapsetPreviewResult> PreviewSetAsync(
+        long setId,
+        TextChannel channel,
+        CancellationToken cancellationToken)
+    {
+        var events = await beatmapEventService.GetEventsForSetAsync(setId, cancellationToken);
+        var mergePlan = await BuildMapMergePlanAsync(events, cancellationToken);
+
+        var sent = 0;
+        var skipped = 0;
+        var failed = 0;
+
+        foreach (var beatmapsetEvent in events)
+        {
+            if (FeedVisibilityRules.ShouldSuppressFromPublicFeed(beatmapsetEvent) ||
+                mergePlan.NominationEventIdsToSuppress.Contains(beatmapsetEvent.EventId))
+            {
+                skipped++;
+                continue;
+            }
+
+            if (beatmapsetEvent.EventType == FeedEventType.Qualification &&
+                mergePlan.NominationForQualification.TryGetValue(beatmapsetEvent.EventId, out var mergedNomination))
+            {
+                ApplyMergedNomination(beatmapsetEvent, mergedNomination);
+            }
+
+            try
+            {
+                var embed = await embedFactory.CreateBeatmapsetEventEmbedAsync(beatmapsetEvent, cancellationToken);
+
+                await channel.SendMessageAsync(
+                    new MessageProperties()
+                        .WithContent($"https://osu.ppy.sh/beatmapsets/{beatmapsetEvent.SetId} (event `{beatmapsetEvent.EventId}`)")
+                        .WithEmbeds([embed]),
+                    cancellationToken: cancellationToken);
+
+                sent++;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogError(exception, "Failed sending preview for beatmapset event {EventId}.", beatmapsetEvent.EventId);
+                failed++;
+            }
+        }
+
+        return new BeatmapsetPreviewResult(events.Count, sent, skipped, failed);
+    }
+
+    private static bool ApplyMergedNomination(BeatmapsetEvent qualification, BeatmapsetEvent nomination)
+    {
+        var changed = false;
+
+        if (qualification.TriggeredBy is null && nomination.TriggeredBy is not null)
+        {
+            qualification.TriggeredBy = nomination.TriggeredBy;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(qualification.Message) && !string.IsNullOrWhiteSpace(nomination.Message))
+        {
+            qualification.Message = nomination.Message;
+            changed = true;
+        }
+
+        return changed;
     }
 
     private static bool ShouldDispatchToRulesets(
@@ -252,6 +310,8 @@ public sealed class BeatmapEventsDispatcher(
     }
 
     private sealed record MapEventInfo(BeatmapsetEvent Event, DateTimeOffset? CreatedAt);
+
+    public sealed record BeatmapsetPreviewResult(int Total, int Sent, int Skipped, int Failed);
 
     private sealed record MapMergePlan(
         HashSet<long> NominationEventIdsToSuppress,

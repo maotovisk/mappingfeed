@@ -94,9 +94,10 @@ await using (var scope = app.Services.CreateAsyncScope())
     await DatabaseSchemaUpdater.EnsureUpdatedAsync(db);
 }
 
-app.Services
-    .GetRequiredService<IApplicationCommandService>()
-    .AddModule<FeedCommandModule>();
+var applicationCommandService = app.Services.GetRequiredService<IApplicationCommandService>();
+applicationCommandService.AddModule<FeedCommandModule>();
+if (app.Environment.IsDevelopment())
+    applicationCommandService.AddModule<DevCommandModule>();
 app.AddComponentInteractionModule<FeedSetupComponentModule>();
 
 app.UseCors(FrontendCorsPolicy);
