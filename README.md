@@ -107,6 +107,11 @@ Main sections:
   - `EventsBatchSize` (default `25`)
   - `DispatchBatchSize` (configured value is clamped to max `10` in sender)
   - `ApiCacheMinutes` (default `10`, clamped in API client to `5..20`)
+- `Emojis` (optional; unicode or custom Discord emoji like `<:name:id>`, empty = default)
+  - `Nomination`, `NominationReset`, `Qualification`, `Disqualification`, `Ranked`,
+    `Unranked`, `GroupAdd`, `GroupRemove`, `GroupMove`, `Fallback`
+  - `ModeOsu`, `ModeTaiko`, `ModeCatch`, `ModeMania` (empty renders the mode as text, e.g. `**[osu]**`)
+  - Docker: `EMOJI_*` variables in `.env` (see `.env.example`)
 
 Use [`MappingFeed.Web/appsettings.example.json`](MappingFeed.Web/appsettings.example.json) as a template.
 
