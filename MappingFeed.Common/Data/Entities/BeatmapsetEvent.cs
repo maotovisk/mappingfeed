@@ -36,6 +36,8 @@ public sealed class BeatmapsetEvent
 
     public string? RankedHistoryJson { get; set; }
 
+    public int? RankedHistoryEarlierCount { get; set; }
+
     public string RawEvent { get; set; } = "{}";
 
     public long EventId { get; set; }

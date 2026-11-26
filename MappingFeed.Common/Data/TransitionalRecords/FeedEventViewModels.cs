@@ -23,7 +23,8 @@ public sealed record FeedMapEventViewData(
     long? MapperUserId,
     IReadOnlyList<string> Modes,
     string? Message,
-    IReadOnlyList<FeedMapHistoryAction> RankedHistory);
+    IReadOnlyList<FeedMapHistoryAction> RankedHistory,
+    int RankedHistoryEarlierCount = 0);
 
 public sealed record FeedGroupEventViewData(
     long UserId,

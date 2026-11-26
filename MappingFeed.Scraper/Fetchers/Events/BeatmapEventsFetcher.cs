@@ -137,6 +137,7 @@ public sealed class BeatmapEventsFetcher(
             if (parsedEvent.EventType != FeedEventType.Ranked)
             {
                 parsedEvent.RankedHistoryJson = null;
+                parsedEvent.RankedHistoryEarlierCount = null;
                 continue;
             }
 
@@ -153,9 +154,10 @@ public sealed class BeatmapEventsFetcher(
                 userNameCache,
                 cancellationToken);
 
-            parsedEvent.RankedHistoryJson = rankedHistory.Count == 0
+            parsedEvent.RankedHistoryJson = rankedHistory.Actions.Count == 0
                 ? null
-                : JsonSerializer.Serialize(rankedHistory, JsonOptions);
+                : JsonSerializer.Serialize(rankedHistory.Actions, JsonOptions);
+            parsedEvent.RankedHistoryEarlierCount = rankedHistory.EarlierCount;
         }
     }
 
@@ -237,7 +239,7 @@ public sealed class BeatmapEventsFetcher(
         return rulesets;
     }
 
-    private async Task<IReadOnlyList<RankedHistorySnapshot>> BuildRankedHistorySnapshotAsync(
+    private async Task<RankedHistoryBuild> BuildRankedHistorySnapshotAsync(
         long eventId,
         IReadOnlyList<OsuBeatmapsetEventsEvent> completeHistory,
         Dictionary<long, OsuUserProfileInfo?> userProfileCache,
@@ -257,7 +259,7 @@ public sealed class BeatmapEventsFetcher(
             .ToList();
 
         if (relevantHistory.Count == 0)
-            return [];
+            return new RankedHistoryBuild([], 0);
 
         var historyWithActors = relevantHistory
             .Select((x, index) => new RankedHistoryEntry(
@@ -315,7 +317,7 @@ public sealed class BeatmapEventsFetcher(
                 FirstNonEmpty(userColor)));
         }
 
-        return actions;
+        return new RankedHistoryBuild(actions, historyWithActors.Count - trimmedHistory.Count);
     }
 
     private static List<RankedHistoryEntry> CoalesceRankedHistory(IReadOnlyList<RankedHistoryEntry> entries)
@@ -409,6 +411,8 @@ public sealed class BeatmapEventsFetcher(
         return rawType.Trim().ToLowerInvariant() switch
         {
             "nominate" => FeedEventType.Nomination,
+            // BanchoBot's resets (from mapper updates) are noise in the activity summary.
+            "nomination_reset" when userId == BeatmapsetEventClassification.BanchoBotUserId => null,
             "nomination_reset" => FeedEventType.NominationReset,
             "qualify" => FeedEventType.Qualification,
             // osu! records unranks as disqualifications by BanchoBot
@@ -700,6 +704,9 @@ public sealed class BeatmapEventsFetcher(
         long? UserId,
         string? Username,
         string? UserColor);
+
+    /// <param name="EarlierCount">How many older entries were cut to fit the summary.</param>
+    private sealed record RankedHistoryBuild(IReadOnlyList<RankedHistorySnapshot> Actions, int EarlierCount);
 
     private sealed record RankedHistoryEvent(OsuBeatmapsetEventsEvent Event, FeedEventType Type);
 

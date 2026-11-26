@@ -46,6 +46,7 @@ public sealed class MappingFeedDbContext(DbContextOptions<MappingFeedDbContext> 
             entity.Property(x => x.BeatmapsetTitle).HasColumnName("beatmapset_title");
             entity.Property(x => x.Rulesets).HasColumnName("rulesets");
             entity.Property(x => x.RankedHistoryJson).HasColumnName("ranked_history_json");
+            entity.Property(x => x.RankedHistoryEarlierCount).HasColumnName("ranked_history_earlier_count");
             entity.Property(x => x.RawEvent).HasColumnName("raw_event");
 
             entity.HasIndex(x => x.CreatedAt);

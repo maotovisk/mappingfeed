@@ -135,7 +135,8 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
                 mapperId,
                 modes,
                 message,
-                rankedHistory),
+                rankedHistory,
+                beatmapsetEvent.RankedHistoryEarlierCount ?? 0),
             null));
     }
 

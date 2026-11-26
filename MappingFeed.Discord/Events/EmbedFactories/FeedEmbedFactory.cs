@@ -60,7 +60,7 @@ public sealed partial class FeedEmbedFactory(
             $"Mapped by {mapperLink} {modeTags}",
         };
 
-        var rankedHistoryLine = BuildRankedHistoryLine(mapData.RankedHistory);
+        var rankedHistoryLine = BuildRankedHistoryLine(mapData.RankedHistory, mapData.RankedHistoryEarlierCount);
         if (!string.IsNullOrWhiteSpace(rankedHistoryLine))
             lines.Add($"\n{rankedHistoryLine}");
 
@@ -118,7 +118,7 @@ public sealed partial class FeedEmbedFactory(
             embed.WithThumbnail(new EmbedThumbnailProperties(eventView.Actor.AvatarUrl!));
     }
 
-    private static string? BuildRankedHistoryLine(IReadOnlyList<FeedMapHistoryAction> rankedHistory)
+    private static string? BuildRankedHistoryLine(IReadOnlyList<FeedMapHistoryAction> rankedHistory, int earlierCount)
     {
         if (rankedHistory.Count == 0)
             return null;
@@ -128,7 +128,13 @@ public sealed partial class FeedEmbedFactory(
             .Select(x => $"{GetEventEmoji(x.Action)} {BuildUserDisplayName(x.Username!, x.UserId)}")
             .ToList();
 
-        return parts.Count == 0 ? null : string.Join("  ", parts);
+        if (parts.Count == 0)
+            return null;
+
+        if (earlierCount > 0)
+            parts.Insert(0, $"`...{earlierCount} earlier` |");
+
+        return string.Join("  ", parts);
     }
 
     private static string? BuildMapFooterText(

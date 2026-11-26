@@ -39,6 +39,7 @@ public static class DatabaseSchemaUpdater
         await EnsureColumnAsync(db, "beatmapset_events", "actor_color", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "rulesets", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "beatmapset_events", "ranked_history_json", "TEXT", cancellationToken);
+        await EnsureColumnAsync(db, "beatmapset_events", "ranked_history_earlier_count", "INTEGER", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "raw_event", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "user_name", "TEXT", cancellationToken);
         await EnsureColumnAsync(db, "group_events", "actor_avatar_url", "TEXT", cancellationToken);
@@ -52,7 +53,7 @@ public static class DatabaseSchemaUpdater
         await BackfillNullTextColumnAsync(db, "beatmapset_events", "raw_event", "{}", cancellationToken);
         await BackfillBeatmapsetEventsFromRawEventAsync(db, cancellationToken);
         await ReclassifyBanchoBotDisqualificationsAsUnrankedAsync(db, cancellationToken);
-        await ReclassifyBanchoBotDisqualificationsInRankedHistoryAsync(db, cancellationToken);
+        await NormalizeBanchoBotEntriesInRankedHistoryAsync(db, cancellationToken);
         await BackfillBeatmapsetRulesetsFromOtherEventsAsync(db, cancellationToken);
         await BackfillGroupEventsFromRawEventAsync(db, cancellationToken);
 
@@ -128,10 +129,10 @@ public static class DatabaseSchemaUpdater
     }
 
     /// <summary>
-    /// Same reclassification as <see cref="ReclassifyBanchoBotDisqualificationsAsUnrankedAsync"/>, applied to
-    /// the activity snapshots stored on Ranked events. Idempotent.
+    /// Brings the activity snapshots stored on Ranked events in line with how new ones are built:
+    /// BanchoBot disqualifications become unranks, and BanchoBot nomination resets are dropped. Idempotent.
     /// </summary>
-    private static async Task ReclassifyBanchoBotDisqualificationsInRankedHistoryAsync(
+    private static async Task NormalizeBanchoBotEntriesInRankedHistoryAsync(
         MappingFeedDbContext db,
         CancellationToken cancellationToken)
     {
@@ -160,7 +161,7 @@ public static class DatabaseSchemaUpdater
                 continue;
 
             var rowChanged = false;
-            foreach (var entry in history.OfType<JsonObject>())
+            foreach (var entry in history.OfType<JsonObject>().ToList())
             {
                 if (entry["userId"] is not JsonValue userIdValue ||
                     !userIdValue.TryGetValue<long>(out var userId) ||
@@ -171,16 +172,24 @@ public static class DatabaseSchemaUpdater
                 }
 
                 // Snapshots serialize the action as a number; accept the name too, and keep the same form.
-                if (actionValue.TryGetValue<int>(out var actionNumber) &&
-                    actionNumber == (int)FeedEventType.Disqualification)
+                var isNumeric = actionValue.TryGetValue<int>(out var actionNumber);
+                FeedEventType? action = isNumeric
+                    ? (FeedEventType)actionNumber
+                    : actionValue.TryGetValue<string>(out var actionName) &&
+                      Enum.TryParse<FeedEventType>(actionName, ignoreCase: true, out var parsed)
+                        ? parsed
+                        : null;
+
+                if (action == FeedEventType.NominationReset)
                 {
-                    entry["action"] = (int)FeedEventType.Unranked;
+                    history.Remove(entry);
                     rowChanged = true;
                 }
-                else if (actionValue.TryGetValue<string>(out var actionName) &&
-                         string.Equals(actionName, nameof(FeedEventType.Disqualification), StringComparison.OrdinalIgnoreCase))
+                else if (action == FeedEventType.Disqualification)
                 {
-                    entry["action"] = nameof(FeedEventType.Unranked);
+                    entry["action"] = isNumeric
+                        ? (int)FeedEventType.Unranked
+                        : nameof(FeedEventType.Unranked);
                     rowChanged = true;
                 }
             }
@@ -188,7 +197,7 @@ public static class DatabaseSchemaUpdater
             if (!rowChanged)
                 continue;
 
-            row.RankedHistoryJson = history.ToJsonString();
+            row.RankedHistoryJson = history.Count == 0 ? null : history.ToJsonString();
             changed = true;
         }
 
@@ -915,13 +924,15 @@ public static class DatabaseSchemaUpdater
                     userNameCache,
                     cancellationToken);
 
-                var serialized = rankedHistory.Count == 0
+                var serialized = rankedHistory.Actions.Count == 0
                     ? null
-                    : JsonSerializer.Serialize(rankedHistory, JsonOptions);
+                    : JsonSerializer.Serialize(rankedHistory.Actions, JsonOptions);
 
-                if (!string.Equals(row.RankedHistoryJson, serialized, StringComparison.Ordinal))
+                if (!string.Equals(row.RankedHistoryJson, serialized, StringComparison.Ordinal) ||
+                    row.RankedHistoryEarlierCount != rankedHistory.EarlierCount)
                 {
                     row.RankedHistoryJson = serialized;
+                    row.RankedHistoryEarlierCount = rankedHistory.EarlierCount;
                     changed = true;
                 }
             }
@@ -1160,7 +1171,7 @@ public static class DatabaseSchemaUpdater
             : normalized[..Math.Max(0, 217)] + "...";
     }
 
-    private static async Task<IReadOnlyList<RankedHistorySnapshot>> BuildRankedHistorySnapshotAsync(
+    private static async Task<RankedHistoryBuild> BuildRankedHistorySnapshotAsync(
         long eventId,
         IReadOnlyList<OsuBeatmapsetEventsEvent> completeHistory,
         ApiBackfillContext context,
@@ -1181,7 +1192,7 @@ public static class DatabaseSchemaUpdater
             .ToList();
 
         if (relevantHistory.Count == 0)
-            return [];
+            return new RankedHistoryBuild([], 0);
 
         var historyWithActors = relevantHistory
             .Select((x, index) => new RankedHistoryEntry(
@@ -1248,7 +1259,7 @@ public static class DatabaseSchemaUpdater
                 FirstNonEmpty(userColor)));
         }
 
-        return actions;
+        return new RankedHistoryBuild(actions, historyWithActors.Count - trimmedHistory.Count);
     }
 
     private static List<RankedHistoryEntry> CoalesceRankedHistory(IReadOnlyList<RankedHistoryEntry> entries)
@@ -1339,6 +1350,8 @@ public static class DatabaseSchemaUpdater
         return rawType.Trim().ToLowerInvariant() switch
         {
             "nominate" => FeedEventType.Nomination,
+            // BanchoBot's resets (from mapper updates) are noise in the activity summary.
+            "nomination_reset" when userId == BeatmapsetEventClassification.BanchoBotUserId => null,
             "nomination_reset" => FeedEventType.NominationReset,
             "qualify" => FeedEventType.Qualification,
             // osu! records unranks as disqualifications by BanchoBot.
@@ -1614,6 +1627,9 @@ public static class DatabaseSchemaUpdater
         long? UserId,
         string? Username,
         string? UserColor);
+
+    /// <param name="EarlierCount">How many older entries were cut to fit the summary.</param>
+    private sealed record RankedHistoryBuild(IReadOnlyList<RankedHistorySnapshot> Actions, int EarlierCount);
 
     private sealed record RankedHistoryEvent(OsuBeatmapsetEventsEvent Event, FeedEventType Type);
 
