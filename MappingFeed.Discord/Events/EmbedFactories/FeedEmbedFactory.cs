@@ -151,6 +151,7 @@ public sealed partial class FeedEmbedFactory(
             FeedEventType.Nomination => quoteText,
             FeedEventType.Qualification => quoteText,
             FeedEventType.Disqualification => quoteText,
+            FeedEventType.Unranked => quoteText,
             FeedEventType.NominationReset => quoteText,
             _ => null,
         };
@@ -160,10 +161,10 @@ public sealed partial class FeedEmbedFactory(
     {
         FeedEventType.Nomination => new Color(52, 152, 219),
         FeedEventType.Qualification => new Color(255, 89, 120),
-        FeedEventType.Ranked => new Color(47, 208, 130),
+        FeedEventType.Ranked => new Color(255, 200, 90),
         FeedEventType.NominationReset => new Color(149, 165, 166),
-        FeedEventType.Unranked => new Color(230, 126, 34),
-        FeedEventType.Disqualification => new Color(255, 161, 38),
+        FeedEventType.Unranked => new Color(230, 85, 0),
+        FeedEventType.Disqualification => new Color(180, 20, 40),
         FeedEventType.GroupAdd => new Color(87, 242, 135),
         FeedEventType.GroupRemove => new Color(201, 164, 255),
         FeedEventType.GroupMove => new Color(52, 152, 219),
@@ -172,15 +173,15 @@ public sealed partial class FeedEmbedFactory(
 
     private static string GetEventEmoji(FeedEventType eventType) => eventType switch
     {
-        FeedEventType.Nomination => "💬",
-        FeedEventType.NominationReset => "↩️",
+        FeedEventType.Nomination => "💭",
+        FeedEventType.NominationReset => "🗯️",
         FeedEventType.Qualification => "❤️",
         FeedEventType.Disqualification => "💔",
         FeedEventType.Ranked => "💖",
-        FeedEventType.Unranked => "🟠",
-        FeedEventType.GroupAdd => "👾",
-        FeedEventType.GroupRemove => "👾",
-        FeedEventType.GroupMove => "👥",
+        FeedEventType.Unranked => "💥",
+        FeedEventType.GroupAdd => "<:groupadd:1575550935910981642>",
+        FeedEventType.GroupRemove => "<:groupremove:1575550931293179994>",
+        FeedEventType.GroupMove => "<:groupmove:1575550933700583474>",
         _ => "•",
     };
 
