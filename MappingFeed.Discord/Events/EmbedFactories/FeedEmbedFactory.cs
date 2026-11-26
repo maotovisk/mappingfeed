@@ -231,21 +231,23 @@ public sealed partial class FeedEmbedFactory(
         return $"https://b.ppy.sh/thumb/{setId}l.jpg";
     }
 
+    /// <summary>
+    /// Escapes formatting chars only when they could pair up (e.g. *a*, __a__, ||a||).
+    /// A single occurrence, or an underscore inside a word (my_name), can't format anything.
+    /// </summary>
     private static string? EscapeDiscordMarkdown(string? text)
     {
         if (string.IsNullOrEmpty(text))
             return text;
 
-        var replaceRegex = EscapableChars();
-        return replaceRegex.Replace(text, "\\$0");
+        var candidates = FormattingChars().Matches(text);
+        return FormattingChars().Replace(text, m => candidates.Count(x => x.Value == m.Value) > 1 ? $"\\{m.Value}" : m.Value);
     }
 
-    private static string BuildDiscordLink(string text, string url)
-    {
-        return ContainsUnsafeLinkLabelChars(text)
+    private static string BuildDiscordLink(string text, string url) =>
+        LinkLabelBreakingChars().IsMatch(text)
             ? $"{EscapeDiscordMarkdown(text)} [↗]({url})"
-            : $"[{text}]({url})";
-    }
+            : $"[{EscapeDiscordMarkdown(text)}]({url})";
 
     private static string BuildUserDisplayName(string username, long? userId)
     {
@@ -254,11 +256,10 @@ public sealed partial class FeedEmbedFactory(
             : BuildDiscordLink(username, $"https://osu.ppy.sh/users/{userId.Value}");
     }
 
-    private static bool ContainsUnsafeLinkLabelChars(string text) => LinkLabelUnsafeChars().IsMatch(text);
+    // An underscore between two letters/digits is plain text in Discord.
+    [GeneratedRegex(@"(?<!\\)(?:[*~`|]|(?<![^\W_])_|_(?![^\W_]))")]
+    private static partial Regex FormattingChars();
 
-    [GeneratedRegex(@"(?<!\\)[*_~`\[\]()]")]
-    private static partial Regex EscapableChars();
-
-    [GeneratedRegex(@"(?<!\\)[*_~`\[\]\\]")]
-    private static partial Regex LinkLabelUnsafeChars();
+    [GeneratedRegex(@"[\[\]\\]")]
+    private static partial Regex LinkLabelBreakingChars();
 }
