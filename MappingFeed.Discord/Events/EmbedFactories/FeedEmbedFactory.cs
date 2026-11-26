@@ -1,9 +1,12 @@
 using System.Text.RegularExpressions;
+using MappingFeed.Common.Config;
 using MappingFeed.Common.Data.Entities;
 using MappingFeed.Common.Data.Enums;
 using MappingFeed.Common.Data.TransitionalRecords;
+using MappingFeed.Common.Extensions;
 using MappingFeed.Common.Services.Beatmap;
 using MappingFeed.Common.Services.Group;
+using Microsoft.Extensions.Options;
 using NetCord;
 using NetCord.Rest;
 
@@ -11,8 +14,11 @@ namespace MappingFeed.Discord.Events.EmbedFactories;
 
 public sealed partial class FeedEmbedFactory(
     IBeatmapEventService beatmapEventService,
-    IGroupEventService groupEventService)
+    IGroupEventService groupEventService,
+    IOptions<EmojiOptions> emojiOptions)
 {
+    private readonly EmojiOptions _emojis = emojiOptions.Value;
+
     public async Task<EmbedProperties> CreateBeatmapsetEventEmbedAsync(
         BeatmapsetEvent beatmapsetEvent,
         CancellationToken cancellationToken)
@@ -29,7 +35,7 @@ public sealed partial class FeedEmbedFactory(
         return CreateEmbed(eventView);
     }
 
-    private static EmbedProperties CreateEmbed(FeedEventViewEntry eventView)
+    private EmbedProperties CreateEmbed(FeedEventViewEntry eventView)
     {
         var embed = new EmbedProperties()
             .WithColor(GetColor(eventView.EventType));
@@ -42,7 +48,7 @@ public sealed partial class FeedEmbedFactory(
         return embed;
     }
 
-    private static void ApplyMapVisuals(
+    private void ApplyMapVisuals(
         EmbedProperties embed,
         FeedEventViewEntry eventView,
         FeedMapEventViewData mapData)
@@ -52,17 +58,15 @@ public sealed partial class FeedEmbedFactory(
         var mapperLink = mapData.MapperUserId is null
             ? EscapeDiscordMarkdown(mapData.MapperName)
             : BuildDiscordLink(mapData.MapperName, $"https://osu.ppy.sh/users/{mapData.MapperUserId.Value}");
-        var modeTags = mapData.Modes.Count == 0
-            ? "[osu]"
-            : string.Join(string.Empty, mapData.Modes.Select(x => $"[{x}]"));
+        var modeTags = BuildModeEmojis(mapData.Modes.Count == 0 ? ["osu"] : mapData.Modes);
 
         var lines = new List<string>
         {
             $"**{beatmapsetTitleLink}**",
-            $"Mapped by {mapperLink} **{modeTags}**",
+            $"Mapped by {mapperLink} {modeTags}",
         };
 
-        var rankedHistoryLine = BuildRankedHistoryLine(mapData.RankedHistory);
+        var rankedHistoryLine = BuildRankedHistoryLine(mapData.RankedHistory, mapData.RankedHistoryEarlierCount);
         if (!string.IsNullOrWhiteSpace(rankedHistoryLine))
             lines.Add($"\n{rankedHistoryLine}");
 
@@ -86,7 +90,7 @@ public sealed partial class FeedEmbedFactory(
         embed.WithFooter(footer);
     }
 
-    private static void ApplyGroupVisuals(
+    private void ApplyGroupVisuals(
         EmbedProperties embed,
         FeedEventViewEntry eventView,
         FeedGroupEventViewData groupData)
@@ -103,7 +107,7 @@ public sealed partial class FeedEmbedFactory(
             FeedEventType.GroupRemove => "Removed",
             _ => eventView.EventType.ToDisplayName(),
         };
-        
+
         var lines = new List<string>
         {
             $"{GetEventEmoji(eventView.EventType)} **{label}** ({ToDiscordRelative(eventView.CreatedAt)})",
@@ -112,7 +116,7 @@ public sealed partial class FeedEmbedFactory(
         };
 
         if (groupData.Playmodes.Count > 0)
-            lines.Add($"for **[{string.Join(", ", groupData.Playmodes)}]**");
+            lines.Add($"for {BuildModeEmojis(groupData.Playmodes)}");
 
         embed.WithDescription(string.Join('\n', lines));
 
@@ -120,7 +124,7 @@ public sealed partial class FeedEmbedFactory(
             embed.WithThumbnail(new EmbedThumbnailProperties(eventView.Actor.AvatarUrl!));
     }
 
-    private static string? BuildRankedHistoryLine(IReadOnlyList<FeedMapHistoryAction> rankedHistory)
+    private string? BuildRankedHistoryLine(IReadOnlyList<FeedMapHistoryAction> rankedHistory, int earlierCount)
     {
         if (rankedHistory.Count == 0)
             return null;
@@ -130,7 +134,13 @@ public sealed partial class FeedEmbedFactory(
             .Select(x => $"{GetEventEmoji(x.Action)} {BuildUserDisplayName(x.Username!, x.UserId)}")
             .ToList();
 
-        return parts.Count == 0 ? null : string.Join("  ", parts);
+        if (parts.Count == 0)
+            return null;
+
+        if (earlierCount > 0)
+            parts.Insert(0, $"`...{earlierCount} earlier` |");
+
+        return string.Join("  ", parts);
     }
 
     private static string? BuildMapFooterText(
@@ -144,13 +154,14 @@ public sealed partial class FeedEmbedFactory(
 
         var nameText = actorName.Trim();
         var hasQuote = !string.IsNullOrWhiteSpace(message);
-        var quoteText = hasQuote ? $"{nameText} \"{Trim(message!.Trim(), 53)}\"" : nameText;
+        var quoteText = hasQuote ? $"{nameText} \"{message!.Trim().Truncate(53)}\"" : nameText;
 
         return eventType switch
         {
             FeedEventType.Nomination => quoteText,
             FeedEventType.Qualification => quoteText,
             FeedEventType.Disqualification => quoteText,
+            FeedEventType.Unranked => quoteText,
             FeedEventType.NominationReset => quoteText,
             _ => null,
         };
@@ -160,28 +171,42 @@ public sealed partial class FeedEmbedFactory(
     {
         FeedEventType.Nomination => new Color(52, 152, 219),
         FeedEventType.Qualification => new Color(255, 89, 120),
-        FeedEventType.Ranked => new Color(47, 208, 130),
+        FeedEventType.Ranked => new Color(255, 200, 90),
         FeedEventType.NominationReset => new Color(149, 165, 166),
-        FeedEventType.Unranked => new Color(230, 126, 34),
-        FeedEventType.Disqualification => new Color(255, 161, 38),
+        FeedEventType.Unranked => new Color(230, 85, 0),
+        FeedEventType.Disqualification => new Color(180, 20, 40),
         FeedEventType.GroupAdd => new Color(87, 242, 135),
         FeedEventType.GroupRemove => new Color(201, 164, 255),
         FeedEventType.GroupMove => new Color(52, 152, 219),
         _ => new Color(149, 165, 166),
     };
 
-    private static string GetEventEmoji(FeedEventType eventType) => eventType switch
+    private string BuildModeEmojis(IEnumerable<string> modes)
     {
-        FeedEventType.Nomination => "💬",
-        FeedEventType.NominationReset => "↩️",
-        FeedEventType.Qualification => "❤️",
-        FeedEventType.Disqualification => "💔",
-        FeedEventType.Ranked => "💖",
-        FeedEventType.Unranked => "🟠",
-        FeedEventType.GroupAdd => "👾",
-        FeedEventType.GroupRemove => "👾",
-        FeedEventType.GroupMove => "👥",
-        _ => "•",
+        return string.Join(' ', modes.Select(GetModeEmoji).Distinct());
+    }
+
+    private string GetModeEmoji(string mode) => (mode.Trim().ToLowerInvariant() switch
+    {
+        "osu" => _emojis.ModeOsu,
+        "taiko" => _emojis.ModeTaiko,
+        "catch" or "fruits" or "ctb" => _emojis.ModeCatch,
+        "mania" => _emojis.ModeMania,
+        _ => null,
+    }).OrDefault($"**[{mode}]**");
+
+    private string GetEventEmoji(FeedEventType eventType) => eventType switch
+    {
+        FeedEventType.Nomination => _emojis.Nomination,
+        FeedEventType.NominationReset => _emojis.NominationReset,
+        FeedEventType.Qualification => _emojis.Qualification,
+        FeedEventType.Disqualification => _emojis.Disqualification,
+        FeedEventType.Ranked => _emojis.Ranked,
+        FeedEventType.Unranked => _emojis.Unranked,
+        FeedEventType.GroupAdd => _emojis.GroupAdd,
+        FeedEventType.GroupRemove => _emojis.GroupRemove,
+        FeedEventType.GroupMove => _emojis.GroupMove,
+        _ => _emojis.Fallback,
     };
 
     private static string GetMapEventDisplayName(FeedEventType eventType) => eventType switch
@@ -206,29 +231,23 @@ public sealed partial class FeedEmbedFactory(
         return $"https://b.ppy.sh/thumb/{setId}l.jpg";
     }
 
-    private static string Trim(string value, int maxLength)
-    {
-        if (value.Length <= maxLength)
-            return value;
-
-        return value[..Math.Max(0, maxLength - 3)] + "...";
-    }
-
+    /// <summary>
+    /// Escapes formatting chars only when they could pair up (e.g. *a*, __a__, ||a||).
+    /// A single occurrence, or an underscore inside a word (my_name), can't format anything.
+    /// </summary>
     private static string? EscapeDiscordMarkdown(string? text)
     {
         if (string.IsNullOrEmpty(text))
             return text;
 
-        var replaceRegex = EscapableChars();
-        return replaceRegex.Replace(text, "\\$0");
+        var candidates = FormattingChars().Matches(text);
+        return FormattingChars().Replace(text, m => candidates.Count(x => x.Value == m.Value) > 1 ? $"\\{m.Value}" : m.Value);
     }
 
-    private static string BuildDiscordLink(string text, string url)
-    {
-        return ContainsUnsafeLinkLabelChars(text)
+    private static string BuildDiscordLink(string text, string url) =>
+        LinkLabelBreakingChars().IsMatch(text)
             ? $"{EscapeDiscordMarkdown(text)} [↗]({url})"
-            : $"[{text}]({url})";
-    }
+            : $"[{EscapeDiscordMarkdown(text)}]({url})";
 
     private static string BuildUserDisplayName(string username, long? userId)
     {
@@ -237,11 +256,10 @@ public sealed partial class FeedEmbedFactory(
             : BuildDiscordLink(username, $"https://osu.ppy.sh/users/{userId.Value}");
     }
 
-    private static bool ContainsUnsafeLinkLabelChars(string text) => LinkLabelUnsafeChars().IsMatch(text);
+    // An underscore between two letters/digits is plain text in Discord.
+    [GeneratedRegex(@"(?<!\\)(?:[*~`|]|(?<![^\W_])_|_(?![^\W_]))")]
+    private static partial Regex FormattingChars();
 
-    [GeneratedRegex(@"(?<!\\)[*_~`\[\]()]")]
-    private static partial Regex EscapableChars();
-
-    [GeneratedRegex(@"(?<!\\)[*_~`\[\]\\]")]
-    private static partial Regex LinkLabelUnsafeChars();
+    [GeneratedRegex(@"[\[\]\\]")]
+    private static partial Regex LinkLabelBreakingChars();
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MappingFeed.Common.Json;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Common.Data.TransitionalRecords;
 
@@ -124,7 +125,7 @@ public static class OsuBeatmapsetEventsParser
         try
         {
             var comment = commentValue.GetValue<string>();
-            return string.IsNullOrWhiteSpace(comment) ? null : comment;
+            return comment.NullIfWhiteSpace();
         }
         catch
         {

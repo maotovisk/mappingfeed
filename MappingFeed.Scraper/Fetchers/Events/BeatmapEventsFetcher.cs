@@ -10,6 +10,7 @@ using MappingFeed.Common.Services.Beatmap;
 using MappingFeed.Common.Services.Osu;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Scraper.Fetchers.Events;
 
@@ -17,7 +18,7 @@ public sealed class BeatmapEventsFetcher(
     IBeatmapEventService beatmapEventService,
     IOsuApiService osuApiService,
     IOptions<FeedOptions> options,
-    ILogger<BeatmapEventsFetcher> logger)
+    ILogger<BeatmapEventsFetcher> logger) : IBeatmapsetEventsFetcher
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly FeedOptions _options = options.Value;
@@ -27,7 +28,36 @@ public sealed class BeatmapEventsFetcher(
         logger.LogInformation("Fetching beatmapset events.");
         var payload = await osuApiService.GetBeatmapEventsAsync(_options.EventsBatchSize, cancellationToken);
 
-        var parsedEvents = payload.Events
+        var newEvents = await ProcessAndSaveAsync(payload.Events, payload.Users, cancellationToken);
+        if (newEvents.Count == 0)
+            return;
+
+        logger.LogInformation("Fetched {Count} beatmapset events.", newEvents.Count);
+    }
+
+    public async Task<int> FetchBeatmapsetAsync(long setId, CancellationToken cancellationToken)
+    {
+        logger.LogInformation("Fetching full event history for beatmapset {SetId}.", setId);
+        var history = await osuApiService.GetCompleteBeatmapsetEventHistoryAsync(setId, cancellationToken);
+
+        // The history endpoint doesn't return the users list; enrichment falls back to user lookups.
+        var newEvents = await ProcessAndSaveAsync(history, [], cancellationToken);
+
+        logger.LogInformation(
+            "Beatmapset {SetId}: {Total} event(s) from osu!, {New} new.",
+            setId,
+            history.Count,
+            newEvents.Count);
+
+        return newEvents.Count;
+    }
+
+    private async Task<IReadOnlyList<BeatmapsetEvent>> ProcessAndSaveAsync(
+        IReadOnlyList<OsuBeatmapsetEventsEvent> sourceEvents,
+        IReadOnlyList<OsuBeatmapsetEventsUser> sourceUsers,
+        CancellationToken cancellationToken)
+    {
+        var parsedEvents = sourceEvents
             .Select(ParseBeatmapsetEvent)
             .Where(x => x is not null)
             .Select(x => x!)
@@ -35,16 +65,12 @@ public sealed class BeatmapEventsFetcher(
             .ToList();
 
         if (parsedEvents.Count == 0)
-            return;
+            return [];
 
-        CoalesceQualificationWithNomination(parsedEvents, payload.Events);
-        await EnrichBeatmapsetEventsAsync(parsedEvents, payload.Events, payload.Users, cancellationToken);
+        CoalesceQualificationWithNomination(parsedEvents, sourceEvents);
+        await EnrichBeatmapsetEventsAsync(parsedEvents, sourceEvents, sourceUsers, cancellationToken);
 
-        var newEvents = await beatmapEventService.SaveNewEventsAsync(parsedEvents, cancellationToken);
-        if (newEvents.Count == 0)
-            return;
-
-        logger.LogInformation("Fetched {Count} beatmapset events.", newEvents.Count);
+        return await beatmapEventService.SaveNewEventsAsync(parsedEvents, cancellationToken);
     }
 
     private async Task EnrichBeatmapsetEventsAsync(
@@ -78,11 +104,11 @@ public sealed class BeatmapEventsFetcher(
                 beatmapsetCache[parsedEvent.SetId] = beatmapset;
             }
 
-            parsedEvent.BeatmapsetTitle = FirstNonEmpty(parsedEvent.BeatmapsetTitle)
-                ?? FirstNonEmpty(beatmapset?.Title)
+            parsedEvent.BeatmapsetTitle = parsedEvent.BeatmapsetTitle.NullIfWhiteSpace()
+                ?? beatmapset?.Title.NullIfWhiteSpace()
                 ?? $"Beatmapset {parsedEvent.SetId}";
-            parsedEvent.MapperName = FirstNonEmpty(parsedEvent.MapperName)
-                ?? FirstNonEmpty(beatmapset?.Creator)
+            parsedEvent.MapperName = parsedEvent.MapperName.NullIfWhiteSpace()
+                ?? beatmapset?.Creator.NullIfWhiteSpace()
                 ?? "Unknown";
 
             var resolvedRulesets = await ResolveRulesetsAsync(parsedEvent, cancellationToken);
@@ -98,20 +124,21 @@ public sealed class BeatmapEventsFetcher(
                     profileCache[userId] = profile;
                 }
 
-                parsedEvent.ActorUsername = FirstNonEmpty(parsedEvent.ActorUsername)
-                    ?? FirstNonEmpty(profile?.Username)
+                parsedEvent.ActorUsername = parsedEvent.ActorUsername.NullIfWhiteSpace()
+                    ?? profile?.Username.NullIfWhiteSpace()
                     ?? sourceUserNameById.GetValueOrDefault(userId);
-                parsedEvent.ActorAvatarUrl = FirstNonEmpty(parsedEvent.ActorAvatarUrl)
-                    ?? FirstNonEmpty(profile?.AvatarUrl);
-                parsedEvent.ActorBadge = FirstNonEmpty(parsedEvent.ActorBadge)
-                    ?? FirstNonEmpty(profile?.Badge);
-                parsedEvent.ActorColor = FirstNonEmpty(parsedEvent.ActorColor)
-                    ?? FirstNonEmpty(profile?.Color);
+                parsedEvent.ActorAvatarUrl = parsedEvent.ActorAvatarUrl.NullIfWhiteSpace()
+                    ?? profile?.AvatarUrl.NullIfWhiteSpace();
+                parsedEvent.ActorBadge = parsedEvent.ActorBadge.NullIfWhiteSpace()
+                    ?? profile?.Badge.NullIfWhiteSpace();
+                parsedEvent.ActorColor = parsedEvent.ActorColor.NullIfWhiteSpace()
+                    ?? profile?.Color.NullIfWhiteSpace();
             }
 
             if (parsedEvent.EventType != FeedEventType.Ranked)
             {
                 parsedEvent.RankedHistoryJson = null;
+                parsedEvent.RankedHistoryEarlierCount = null;
                 continue;
             }
 
@@ -128,9 +155,10 @@ public sealed class BeatmapEventsFetcher(
                 userNameCache,
                 cancellationToken);
 
-            parsedEvent.RankedHistoryJson = rankedHistory.Count == 0
+            parsedEvent.RankedHistoryJson = rankedHistory.Actions.Count == 0
                 ? null
-                : JsonSerializer.Serialize(rankedHistory, JsonOptions);
+                : JsonSerializer.Serialize(rankedHistory.Actions, JsonOptions);
+            parsedEvent.RankedHistoryEarlierCount = rankedHistory.EarlierCount;
         }
     }
 
@@ -158,7 +186,7 @@ public sealed class BeatmapEventsFetcher(
                     return praiseOrHypeMessage;
             }
 
-            if (parsedEvent.EventType is FeedEventType.Disqualification or FeedEventType.NominationReset)
+            if (parsedEvent.EventType is FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset)
             {
                 var discussionMessageByUser = await osuApiService.GetLatestDiscussionMessageByUserAsync(
                     parsedEvent.SetId,
@@ -212,7 +240,7 @@ public sealed class BeatmapEventsFetcher(
         return rulesets;
     }
 
-    private async Task<IReadOnlyList<RankedHistorySnapshot>> BuildRankedHistorySnapshotAsync(
+    private async Task<RankedHistoryBuild> BuildRankedHistorySnapshotAsync(
         long eventId,
         IReadOnlyList<OsuBeatmapsetEventsEvent> completeHistory,
         Dictionary<long, OsuUserProfileInfo?> userProfileCache,
@@ -224,7 +252,7 @@ public sealed class BeatmapEventsFetcher(
             .Select(x => new
             {
                 Event = x,
-                Type = MapHistoryEventType(x.Type),
+                Type = MapHistoryEventType(x.Type, x.UserId),
             })
             .Where(x => x.Type is not null)
             .Select(x => new RankedHistoryEvent(x.Event, x.Type!.Value))
@@ -232,7 +260,7 @@ public sealed class BeatmapEventsFetcher(
             .ToList();
 
         if (relevantHistory.Count == 0)
-            return [];
+            return new RankedHistoryBuild([], 0);
 
         var historyWithActors = relevantHistory
             .Select((x, index) => new RankedHistoryEntry(
@@ -277,7 +305,7 @@ public sealed class BeatmapEventsFetcher(
 
                 if (!userNameCache.TryGetValue(userId, out userName))
                 {
-                    userName = FirstNonEmpty(profile?.Username)
+                    userName = profile?.Username.NullIfWhiteSpace()
                         ?? await osuApiService.GetUserNameAsync(userId, cancellationToken);
                     userNameCache[userId] = userName;
                 }
@@ -286,11 +314,11 @@ public sealed class BeatmapEventsFetcher(
             actions.Add(new RankedHistorySnapshot(
                 historyEvent.Type,
                 historyEvent.UserId,
-                string.IsNullOrWhiteSpace(userName) ? null : userName,
-                FirstNonEmpty(userColor)));
+                userName.NullIfWhiteSpace(),
+                userColor.NullIfWhiteSpace()));
         }
 
-        return actions;
+        return new RankedHistoryBuild(actions, historyWithActors.Count - trimmedHistory.Count);
     }
 
     private static List<RankedHistoryEntry> CoalesceRankedHistory(IReadOnlyList<RankedHistoryEntry> entries)
@@ -379,13 +407,17 @@ public sealed class BeatmapEventsFetcher(
         return delta <= maxGap;
     }
 
-    private static FeedEventType? MapHistoryEventType(string rawType)
+    private static FeedEventType? MapHistoryEventType(string rawType, long? userId)
     {
         return rawType.Trim().ToLowerInvariant() switch
         {
             "nominate" => FeedEventType.Nomination,
+            // BanchoBot's resets (from mapper updates) are noise in the activity summary.
+            "nomination_reset" when userId == BeatmapsetEventClassification.BanchoBotUserId => null,
             "nomination_reset" => FeedEventType.NominationReset,
             "qualify" => FeedEventType.Qualification,
+            // osu! records unranks as disqualifications by BanchoBot
+            "disqualify" when userId == BeatmapsetEventClassification.BanchoBotUserId => FeedEventType.Unranked,
             "disqualify" => FeedEventType.Disqualification,
             _ => null,
         };
@@ -487,7 +519,7 @@ public sealed class BeatmapEventsFetcher(
 
     private static BeatmapsetEvent? ParseBeatmapsetEvent(OsuBeatmapsetEventsEvent payload)
     {
-        var eventType = MapBeatmapsetEventType(payload.Type);
+        var eventType = BeatmapsetEventClassification.FromOsuEventType(payload.Type, payload.UserId);
         if (eventType is null)
             return null;
 
@@ -511,20 +543,6 @@ public sealed class BeatmapEventsFetcher(
         };
     }
 
-    private static FeedEventType? MapBeatmapsetEventType(string rawType)
-    {
-        return rawType.Trim().ToLowerInvariant() switch
-        {
-            "nominate" => FeedEventType.Nomination,
-            "nomination_reset" => FeedEventType.NominationReset,
-            "qualify" => FeedEventType.Qualification,
-            "disqualify" => FeedEventType.Disqualification,
-            "rank" => FeedEventType.Ranked,
-            "unrank" => FeedEventType.Unranked,
-            _ => null,
-        };
-    }
-
     private static long? TryGetMapperUserId(string rawEvent)
     {
         try
@@ -543,7 +561,7 @@ public sealed class BeatmapEventsFetcher(
         try
         {
             var root = JsonNode.Parse(rawEvent) as JsonObject;
-            return FirstNonEmpty(root?.TryGetNestedString("beatmapset", "creator"));
+            return root?.TryGetNestedString("beatmapset", "creator").NullIfWhiteSpace();
         }
         catch
         {
@@ -561,7 +579,7 @@ public sealed class BeatmapEventsFetcher(
             if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
                 return $"{artist} - {title}";
 
-            return FirstNonEmpty(title);
+            return title.NullIfWhiteSpace();
         }
         catch
         {
@@ -574,7 +592,7 @@ public sealed class BeatmapEventsFetcher(
         try
         {
             var root = JsonNode.Parse(rawEvent) as JsonObject;
-            return FirstNonEmpty(root?.TryGetNestedString("user", "username"));
+            return root?.TryGetNestedString("user", "username").NullIfWhiteSpace();
         }
         catch
         {
@@ -616,7 +634,7 @@ public sealed class BeatmapEventsFetcher(
             ?? payload.TryGetNestedString("user", "color")
             ?? payload.TryGetNestedString("user", "colour");
 
-        var normalized = NormalizeColor(rawColor);
+        var normalized = rawColor.NormalizeHexColor();
         if (!string.IsNullOrWhiteSpace(normalized))
             return normalized;
 
@@ -626,7 +644,7 @@ public sealed class BeatmapEventsFetcher(
 
         foreach (var group in groups.OfType<JsonObject>())
         {
-            var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+            var groupColor = group.TryGetString("color", "colour").NormalizeHexColor();
             if (!string.IsNullOrWhiteSpace(groupColor))
                 return groupColor;
         }
@@ -634,27 +652,9 @@ public sealed class BeatmapEventsFetcher(
         return null;
     }
 
-    private static string? NormalizeColor(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith('#'))
-            trimmed = trimmed[1..];
-
-        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
-            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
-
-        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
-            return null;
-
-        return $"#{trimmed.ToUpperInvariant()}";
-    }
-
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))
@@ -666,20 +666,7 @@ public sealed class BeatmapEventsFetcher(
         if (string.IsNullOrWhiteSpace(normalized))
             return null;
 
-        return Trim(normalized, 220);
-    }
-
-    private static string Trim(string value, int maxLength)
-    {
-        if (value.Length <= maxLength)
-            return value;
-
-        return value[..Math.Max(0, maxLength - 3)] + "...";
-    }
-
-    private static string? FirstNonEmpty(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value;
+        return normalized.Truncate(220);
     }
 
     private sealed record RankedHistorySnapshot(
@@ -687,6 +674,9 @@ public sealed class BeatmapEventsFetcher(
         long? UserId,
         string? Username,
         string? UserColor);
+
+    /// <param name="EarlierCount">How many older entries were cut to fit the summary.</param>
+    private sealed record RankedHistoryBuild(IReadOnlyList<RankedHistorySnapshot> Actions, int EarlierCount);
 
     private sealed record RankedHistoryEvent(OsuBeatmapsetEventsEvent Event, FeedEventType Type);
 

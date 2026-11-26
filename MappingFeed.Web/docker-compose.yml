@@ -22,6 +22,20 @@ services:
       Feed__ApiBackfillRepeatIntervalMinutes: ${FEED_API_BACKFILL_REPEAT_INTERVAL_MINUTES:-0}
       Feed__ApiBackfillThrottleMilliseconds: ${FEED_API_BACKFILL_THROTTLE_MILLISECONDS:-1000}
       Feed__ApiBackfillBatchSize: ${FEED_API_BACKFILL_BATCH_SIZE:-128}
+      Emojis__Nomination: ${EMOJI_NOMINATION:-}
+      Emojis__NominationReset: ${EMOJI_NOMINATION_RESET:-}
+      Emojis__Qualification: ${EMOJI_QUALIFICATION:-}
+      Emojis__Disqualification: ${EMOJI_DISQUALIFICATION:-}
+      Emojis__Ranked: ${EMOJI_RANKED:-}
+      Emojis__Unranked: ${EMOJI_UNRANKED:-}
+      Emojis__GroupAdd: ${EMOJI_GROUP_ADD:-}
+      Emojis__GroupRemove: ${EMOJI_GROUP_REMOVE:-}
+      Emojis__GroupMove: ${EMOJI_GROUP_MOVE:-}
+      Emojis__Fallback: ${EMOJI_FALLBACK:-}
+      Emojis__ModeOsu: ${EMOJI_MODE_OSU:-}
+      Emojis__ModeTaiko: ${EMOJI_MODE_TAIKO:-}
+      Emojis__ModeCatch: ${EMOJI_MODE_CATCH:-}
+      Emojis__ModeMania: ${EMOJI_MODE_MANIA:-}
       Logging__LogLevel__Default: ${LOG_LEVEL_DEFAULT:-Information}
       Logging__LogLevel__Microsoft: ${LOG_LEVEL_MICROSOFT:-Warning}
       "Logging__LogLevel__Microsoft.Hosting.Lifetime": ${LOG_LEVEL_HOSTING_LIFETIME:-Information}

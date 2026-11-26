@@ -1,4 +1,5 @@
 using MappingFeed.Common.Config;
+using MappingFeed.Common.Services.Beatmap;
 using MappingFeed.Common.Services.Osu;
 using MappingFeed.Scraper.Fetchers.Events;
 using MappingFeed.Scraper.Services.Osu;
@@ -17,6 +18,7 @@ public static class MappingFeedScraperServiceCollectionExtensions
         services.AddHttpClient<IOsuApiService, OsuApiService>(ConfigureOsuHttpClient);
 
         services.AddSingleton<BeatmapEventsFetcher>();
+        services.AddSingleton<IBeatmapsetEventsFetcher>(sp => sp.GetRequiredService<BeatmapEventsFetcher>());
         services.AddSingleton<GroupEventsFetcher>();
 
         return services;

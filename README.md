@@ -107,6 +107,11 @@ Main sections:
   - `EventsBatchSize` (default `25`)
   - `DispatchBatchSize` (configured value is clamped to max `10` in sender)
   - `ApiCacheMinutes` (default `10`, clamped in API client to `5..20`)
+- `Emojis` (optional; unicode or custom Discord emoji like `<:name:id>`, empty = default)
+  - `Nomination`, `NominationReset`, `Qualification`, `Disqualification`, `Ranked`,
+    `Unranked`, `GroupAdd`, `GroupRemove`, `GroupMove`, `Fallback`
+  - `ModeOsu`, `ModeTaiko`, `ModeCatch`, `ModeMania` (empty renders the mode as text, e.g. `**[osu]**`)
+  - Docker: `EMOJI_*` variables in `.env` (see `.env.example`)
 
 Use [`MappingFeed.Web/appsettings.example.json`](MappingFeed.Web/appsettings.example.json) as a template.
 
@@ -114,21 +119,28 @@ Use [`MappingFeed.Web/appsettings.example.json`](MappingFeed.Web/appsettings.exa
 
 Run the following commands from the repository root.
 
-1. Create environment variables (recommended), for example:
+1. Copy `MappingFeed.Web/appsettings.example.json` to
+   `MappingFeed.Web/appsettings.Development.json` (gitignored) and fill in
+   `Discord:Token`, `Osu:ClientId` and `Osu:ClientSecret`.
 
-```bash
-export Discord__Token="<discord-token>"
-export Osu__ClientId="<osu-client-id>"
-export Osu__ClientSecret="<osu-client-secret>"
-# optional:
-export Osu__BaseUrl="https://osu.ppy.sh"
-```
+   Environment variables also work and override the JSON, for example
+   `Discord__Token`, `Osu__ClientId`, `Osu__ClientSecret`.
 
 2. Run:
 
 ```bash
 dotnet run --project MappingFeed.Web
 ```
+
+`dotnet run` uses the `Development` profile in
+`MappingFeed.Web/Properties/launchSettings.json`, which sets the environment to
+`Development` and serves on `http://localhost:5000`. Docker and published builds
+ignore this file and run as `Production`.
+
+Development mode also registers the dev-only `/preview-events beatmapset_id:<id>`
+command, which fetches a beatmapset's event history from osu! and posts the embed
+for every event the feed would show into the current channel. Use a separate test
+bot for development, since slash commands are registered globally for the bot.
 
 3. Query recent events:
 

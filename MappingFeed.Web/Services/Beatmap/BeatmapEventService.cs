@@ -7,6 +7,7 @@ using MappingFeed.Common.Data.TransitionalRecords;
 using MappingFeed.Common.Json;
 using MappingFeed.Common.Repositories.Beatmap;
 using MappingFeed.Common.Services.Beatmap;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Web.Services.Beatmap;
 
@@ -54,6 +55,13 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
         return repository.HasEarlierNominationAsync(setId, beforeEventId, cancellationToken);
     }
 
+    public Task<IReadOnlyList<BeatmapsetEvent>> GetEventsForSetAsync(
+        long setId,
+        CancellationToken cancellationToken)
+    {
+        return repository.GetEventsForSetAsync(setId, cancellationToken);
+    }
+
     public Task UpdateAsync(BeatmapsetEvent beatmapsetEvent, CancellationToken cancellationToken)
     {
         return repository.UpdateAsync(beatmapsetEvent, cancellationToken);
@@ -74,7 +82,7 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
         MapEventsFilter filters,
         CancellationToken cancellationToken)
     {
-        var take = NormalizeLimit(limit);
+        var take = Math.Clamp(limit ?? DefaultLimit, 1, MaxLimit);
         var rows = await QueryRecentAsync(take + 1, beforeEventId, filters, cancellationToken);
         var hasMore = rows.Count > take;
         var pageRows = rows.Take(take).ToList();
@@ -94,8 +102,8 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
 
         var createdAt = beatmapsetEvent.CreatedAt ?? TryGetCreatedAt(beatmapsetEvent.RawEvent);
         var beatmapsetUrl = $"https://osu.ppy.sh/beatmapsets/{beatmapsetEvent.SetId}";
-        var actorName = FirstNonEmpty(beatmapsetEvent.ActorUsername);
-        var actorColor = FirstNonEmpty(beatmapsetEvent.ActorColor)
+        var actorName = beatmapsetEvent.ActorUsername.NullIfWhiteSpace();
+        var actorColor = beatmapsetEvent.ActorColor.NullIfWhiteSpace()
             ?? TryGetActorColor(beatmapsetEvent.RawEvent);
         var actor = HasActorData(beatmapsetEvent.TriggeredBy, actorName, beatmapsetEvent.ActorAvatarUrl, beatmapsetEvent.ActorBadge, actorColor)
             ? new FeedEventActor(
@@ -106,8 +114,8 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
                 actorColor)
             : null;
 
-        var mapTitle = FirstNonEmpty(beatmapsetEvent.BeatmapsetTitle) ?? $"Beatmapset {beatmapsetEvent.SetId}";
-        var mapperName = FirstNonEmpty(beatmapsetEvent.MapperName) ?? "Unknown";
+        var mapTitle = beatmapsetEvent.BeatmapsetTitle.NullIfWhiteSpace() ?? $"Beatmapset {beatmapsetEvent.SetId}";
+        var mapperName = beatmapsetEvent.MapperName.NullIfWhiteSpace() ?? "Unknown";
         var mapperId = beatmapsetEvent.MapperUserId ?? TryGetMapperUserId(beatmapsetEvent.RawEvent);
         var modes = ResolveModes(beatmapsetEvent);
         var message = NormalizeMapMessage(beatmapsetEvent.EventType, beatmapsetEvent.Message);
@@ -128,7 +136,8 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
                 mapperId,
                 modes,
                 message,
-                rankedHistory),
+                rankedHistory,
+                beatmapsetEvent.RankedHistoryEarlierCount ?? 0),
             null));
     }
 
@@ -162,7 +171,7 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
                         x.Action,
                         x.UserId,
                         string.IsNullOrWhiteSpace(x.Username) ? null : x.Username,
-                        FirstNonEmpty(x.UserColor)))
+                        x.UserColor.NullIfWhiteSpace()))
                     .ToList();
         }
         catch
@@ -272,7 +281,7 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
                 ?? root?.TryGetNestedString("user", "color")
                 ?? root?.TryGetNestedString("user", "colour");
 
-            var normalized = NormalizeColor(rawColor);
+            var normalized = rawColor.NormalizeHexColor();
             if (!string.IsNullOrWhiteSpace(normalized))
                 return normalized;
 
@@ -281,7 +290,7 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
 
             foreach (var group in groups.OfType<JsonObject>())
             {
-                var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+                var groupColor = group.TryGetString("color", "colour").NormalizeHexColor();
                 if (!string.IsNullOrWhiteSpace(groupColor))
                     return groupColor;
             }
@@ -296,7 +305,7 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
 
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
     {
-        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.NominationReset))
+        if (eventType is not (FeedEventType.Nomination or FeedEventType.Qualification or FeedEventType.Disqualification or FeedEventType.Unranked or FeedEventType.NominationReset))
             return null;
 
         if (string.IsNullOrWhiteSpace(message))
@@ -305,7 +314,7 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
         var normalized = string.Join(' ', message
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
-        return string.IsNullOrWhiteSpace(normalized) ? null : Trim(normalized, 220);
+        return normalized.NullIfWhiteSpace()?.Truncate(220);
     }
 
     private static bool HasActorData(long? userId, string? username, string? avatarUrl, string? badge, string? color)
@@ -315,40 +324,6 @@ public sealed class BeatmapEventService(IBeatmapEventRepository repository) : IB
                !string.IsNullOrWhiteSpace(avatarUrl) ||
                !string.IsNullOrWhiteSpace(badge) ||
                !string.IsNullOrWhiteSpace(color);
-    }
-
-    private static string? NormalizeColor(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith('#'))
-            trimmed = trimmed[1..];
-
-        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
-            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
-
-        return trimmed.Length == 6 && trimmed.All(Uri.IsHexDigit)
-            ? $"#{trimmed.ToUpperInvariant()}"
-            : null;
-    }
-
-    private static string? FirstNonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
-
-    private static int NormalizeLimit(int? limit)
-    {
-        if (limit is null)
-            return DefaultLimit;
-
-        return Math.Clamp(limit.Value, 1, MaxLimit);
-    }
-
-    private static string Trim(string value, int maxLength)
-    {
-        return value.Length <= maxLength
-            ? value
-            : value[..Math.Max(0, maxLength - 3)] + "...";
     }
 
     private sealed record RankedHistorySnapshot(

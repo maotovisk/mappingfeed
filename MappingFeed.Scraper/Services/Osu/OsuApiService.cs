@@ -10,6 +10,7 @@ using MappingFeed.Common.Services.Osu;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Scraper.Services.Osu;
 
@@ -116,7 +117,7 @@ public sealed class OsuApiService(
         {
             var groupId = group.TryGetInt64("id");
             var groupName = group.TryGetString("short_name", "name");
-            var groupColor = NormalizeColor(group.TryGetString("colour", "color"));
+            var groupColor = group.TryGetString("colour", "color").NormalizeHexColor();
 
             if (groupId is not null)
             {
@@ -221,7 +222,7 @@ public sealed class OsuApiService(
                 return null;
 
             var name = root.TryGetString("name", "short_name");
-            var color = NormalizeColor(root.TryGetString("colour", "color"));
+            var color = root.TryGetString("colour", "color").NormalizeHexColor();
 
             if (!string.IsNullOrWhiteSpace(name))
                 memoryCache.Set<string>($"group:{groupId}", name, _cacheDuration);
@@ -946,24 +947,6 @@ public sealed class OsuApiService(
         };
     }
 
-    private static string? NormalizeColor(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith('#'))
-            trimmed = trimmed[1..];
-
-        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
-            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
-
-        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
-            return null;
-
-        return $"#{trimmed.ToUpperInvariant()}";
-    }
-
     private static (string? Badge, string? Color) ResolveUserDecorations(JsonObject root)
     {
         string? mappedBadge = null;
@@ -983,7 +966,7 @@ public sealed class OsuApiService(
                     fallbackShortName = shortName.Trim().ToUpperInvariant();
                 }
 
-                var groupColor = NormalizeColor(group.TryGetString("colour", "color"));
+                var groupColor = group.TryGetString("colour", "color").NormalizeHexColor();
                 if (string.IsNullOrWhiteSpace(fallbackColor) && !string.IsNullOrWhiteSpace(groupColor))
                     fallbackColor = groupColor;
 
@@ -1008,7 +991,7 @@ public sealed class OsuApiService(
         }
 
         if (!string.IsNullOrWhiteSpace(mappedBadge))
-            return (mappedBadge, FirstNonEmpty(mappedColor) ?? fallbackColor);
+            return (mappedBadge, mappedColor.NullIfWhiteSpace() ?? fallbackColor);
 
         if (!string.IsNullOrWhiteSpace(fallbackShortName))
             return (fallbackShortName, fallbackColor);
@@ -1018,11 +1001,6 @@ public sealed class OsuApiService(
             return (null, fallbackColor);
 
         return (defaultGroup.ToUpperInvariant(), fallbackColor);
-    }
-
-    private static string? FirstNonEmpty(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static IReadOnlyList<JsonObject> ExtractEvents(JsonObject root, params string[] arrayPropertyNames)
