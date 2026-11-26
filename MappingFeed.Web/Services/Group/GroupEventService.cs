@@ -7,6 +7,7 @@ using MappingFeed.Common.Json;
 using MappingFeed.Common.Repositories.Group;
 using MappingFeed.Common.Services.Group;
 using MappingFeed.Common.Services.Osu;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Web.Services.Group;
 
@@ -58,7 +59,7 @@ public sealed class GroupEventService(
         GroupEventsFilter filters,
         CancellationToken cancellationToken)
     {
-        var take = NormalizeLimit(limit);
+        var take = Math.Clamp(limit ?? DefaultLimit, 1, MaxLimit);
         var rows = await QueryRecentAsync(take + 1, beforeEventId, filters, cancellationToken);
         var hasMore = rows.Count > take;
         var pageRows = rows.Take(take).ToList();
@@ -74,11 +75,11 @@ public sealed class GroupEventService(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var userName = FirstNonEmpty(groupEvent.UserName) ?? $"User {groupEvent.UserId}";
-        var groupName = FirstNonEmpty(groupEvent.GroupName)
+        var userName = groupEvent.UserName.NullIfWhiteSpace() ?? $"User {groupEvent.UserId}";
+        var groupName = groupEvent.GroupName.NullIfWhiteSpace()
             ?? TryGetGroupName(groupEvent.RawEvent)
             ?? $"Group {groupEvent.GroupId}";
-        var groupColor = FirstNonEmpty(groupEvent.GroupColor)
+        var groupColor = groupEvent.GroupColor.NullIfWhiteSpace()
             ?? TryGetGroupColor(groupEvent.RawEvent);
 
         var playmodes = ParsePlaymodes(groupEvent.Playmodes);
@@ -88,7 +89,7 @@ public sealed class GroupEventService(
         var createdAt = groupEvent.CreatedAt ?? TryGetCreatedAt(groupEvent.RawEvent);
         var userUrl = $"https://osu.ppy.sh/users/{groupEvent.UserId}";
         var groupUrl = $"https://osu.ppy.sh/groups/{groupEvent.GroupId}";
-        var actorColor = FirstNonEmpty(groupEvent.ActorColor)
+        var actorColor = groupEvent.ActorColor.NullIfWhiteSpace()
             ?? TryGetActorColor(groupEvent.RawEvent);
 
         return new FeedEventViewEntry(
@@ -228,7 +229,7 @@ public sealed class GroupEventService(
                 ?? root?.TryGetNestedString("group", "color")
                 ?? root?.TryGetNestedString("group", "colour");
 
-            return NormalizeColor(rawColor);
+            return rawColor.NormalizeHexColor();
         }
         catch
         {
@@ -245,7 +246,7 @@ public sealed class GroupEventService(
                 ?? root?.TryGetNestedString("user", "color")
                 ?? root?.TryGetNestedString("user", "colour");
 
-            var normalized = NormalizeColor(rawColor);
+            var normalized = rawColor.NormalizeHexColor();
             if (!string.IsNullOrWhiteSpace(normalized))
                 return normalized;
 
@@ -254,7 +255,7 @@ public sealed class GroupEventService(
 
             foreach (var group in groups.OfType<JsonObject>())
             {
-                var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+                var groupColor = group.TryGetString("color", "colour").NormalizeHexColor();
                 if (!string.IsNullOrWhiteSpace(groupColor))
                     return groupColor;
             }
@@ -265,32 +266,5 @@ public sealed class GroupEventService(
         {
             return null;
         }
-    }
-
-    private static string? NormalizeColor(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith('#'))
-            trimmed = trimmed[1..];
-
-        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
-            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
-
-        return trimmed.Length == 6 && trimmed.All(Uri.IsHexDigit)
-            ? $"#{trimmed.ToUpperInvariant()}"
-            : null;
-    }
-
-    private static string? FirstNonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
-
-    private static int NormalizeLimit(int? limit)
-    {
-        if (limit is null)
-            return DefaultLimit;
-
-        return Math.Clamp(limit.Value, 1, MaxLimit);
     }
 }

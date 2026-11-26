@@ -4,6 +4,7 @@ using MappingFeed.Common.Services.Beatmap;
 using MappingFeed.Common.Services.Group;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Web.Api.Handlers;
 
@@ -101,7 +102,7 @@ public static class FeedEventsHandlers
                 parsedEventTypes = null;
         }
 
-        var normalizedText = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        var normalizedText = text.NullIfWhiteSpace()?.Trim();
         filters = new MapEventsFilter(parsedRuleset, parsedEventTypes, normalizedText);
         return true;
     }

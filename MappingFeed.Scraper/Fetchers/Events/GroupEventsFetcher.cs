@@ -10,6 +10,7 @@ using MappingFeed.Common.Services.Group;
 using MappingFeed.Common.Services.Osu;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Scraper.Fetchers.Events;
 
@@ -67,16 +68,16 @@ public sealed class GroupEventsFetcher(
                 profileCache[parsedEvent.UserId] = profile;
             }
 
-            parsedEvent.UserName = FirstNonEmpty(parsedEvent.UserName)
-                ?? FirstNonEmpty(profile?.Username)
+            parsedEvent.UserName = parsedEvent.UserName.NullIfWhiteSpace()
+                ?? profile?.Username.NullIfWhiteSpace()
                 ?? await osuApiService.GetUserNameAsync(parsedEvent.UserId, cancellationToken)
                 ?? $"User {parsedEvent.UserId}";
-            parsedEvent.ActorAvatarUrl = FirstNonEmpty(parsedEvent.ActorAvatarUrl)
-                ?? FirstNonEmpty(profile?.AvatarUrl);
-            parsedEvent.ActorBadge = FirstNonEmpty(parsedEvent.ActorBadge)
-                ?? FirstNonEmpty(profile?.Badge);
-            parsedEvent.ActorColor = FirstNonEmpty(parsedEvent.ActorColor)
-                ?? FirstNonEmpty(profile?.Color);
+            parsedEvent.ActorAvatarUrl = parsedEvent.ActorAvatarUrl.NullIfWhiteSpace()
+                ?? profile?.AvatarUrl.NullIfWhiteSpace();
+            parsedEvent.ActorBadge = parsedEvent.ActorBadge.NullIfWhiteSpace()
+                ?? profile?.Badge.NullIfWhiteSpace();
+            parsedEvent.ActorColor = parsedEvent.ActorColor.NullIfWhiteSpace()
+                ?? profile?.Color.NullIfWhiteSpace();
 
             if (!groupNameCache.TryGetValue(parsedEvent.GroupId, out var groupName))
             {
@@ -90,11 +91,11 @@ public sealed class GroupEventsFetcher(
                 groupColorCache[parsedEvent.GroupId] = groupColor;
             }
 
-            parsedEvent.GroupName = FirstNonEmpty(parsedEvent.GroupName)
-                ?? FirstNonEmpty(groupName)
+            parsedEvent.GroupName = parsedEvent.GroupName.NullIfWhiteSpace()
+                ?? groupName.NullIfWhiteSpace()
                 ?? $"Group {parsedEvent.GroupId}";
-            parsedEvent.GroupColor = FirstNonEmpty(parsedEvent.GroupColor)
-                ?? FirstNonEmpty(groupColor);
+            parsedEvent.GroupColor = parsedEvent.GroupColor.NullIfWhiteSpace()
+                ?? groupColor.NullIfWhiteSpace();
         }
     }
 
@@ -178,7 +179,7 @@ public sealed class GroupEventsFetcher(
             ?? payload.TryGetNestedString("group", "color")
             ?? payload.TryGetNestedString("group", "colour");
 
-        return NormalizeColor(rawColor);
+        return rawColor.NormalizeHexColor();
     }
 
     private static string? TryExtractActorColor(JsonObject payload)
@@ -187,7 +188,7 @@ public sealed class GroupEventsFetcher(
             ?? payload.TryGetNestedString("user", "color")
             ?? payload.TryGetNestedString("user", "colour");
 
-        var normalized = NormalizeColor(rawColor);
+        var normalized = rawColor.NormalizeHexColor();
         if (!string.IsNullOrWhiteSpace(normalized))
             return normalized;
 
@@ -197,34 +198,11 @@ public sealed class GroupEventsFetcher(
 
         foreach (var group in groups.OfType<JsonObject>())
         {
-            var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+            var groupColor = group.TryGetString("color", "colour").NormalizeHexColor();
             if (!string.IsNullOrWhiteSpace(groupColor))
                 return groupColor;
         }
 
         return null;
-    }
-
-    private static string? NormalizeColor(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith('#'))
-            trimmed = trimmed[1..];
-
-        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
-            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
-
-        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
-            return null;
-
-        return $"#{trimmed.ToUpperInvariant()}";
-    }
-
-    private static string? FirstNonEmpty(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 }

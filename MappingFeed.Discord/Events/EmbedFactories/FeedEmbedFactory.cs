@@ -154,7 +154,7 @@ public sealed partial class FeedEmbedFactory(
 
         var nameText = actorName.Trim();
         var hasQuote = !string.IsNullOrWhiteSpace(message);
-        var quoteText = hasQuote ? $"{nameText} \"{Trim(message!.Trim(), 53)}\"" : nameText;
+        var quoteText = hasQuote ? $"{nameText} \"{message!.Trim().Truncate(53)}\"" : nameText;
 
         return eventType switch
         {
@@ -229,14 +229,6 @@ public sealed partial class FeedEmbedFactory(
     private static string BuildBeatmapsetThumbnailUrl(long setId)
     {
         return $"https://b.ppy.sh/thumb/{setId}l.jpg";
-    }
-
-    private static string Trim(string value, int maxLength)
-    {
-        if (value.Length <= maxLength)
-            return value;
-
-        return value[..Math.Max(0, maxLength - 3)] + "...";
     }
 
     private static string? EscapeDiscordMarkdown(string? text)

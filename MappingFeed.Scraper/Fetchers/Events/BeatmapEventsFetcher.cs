@@ -10,6 +10,7 @@ using MappingFeed.Common.Services.Beatmap;
 using MappingFeed.Common.Services.Osu;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Scraper.Fetchers.Events;
 
@@ -103,11 +104,11 @@ public sealed class BeatmapEventsFetcher(
                 beatmapsetCache[parsedEvent.SetId] = beatmapset;
             }
 
-            parsedEvent.BeatmapsetTitle = FirstNonEmpty(parsedEvent.BeatmapsetTitle)
-                ?? FirstNonEmpty(beatmapset?.Title)
+            parsedEvent.BeatmapsetTitle = parsedEvent.BeatmapsetTitle.NullIfWhiteSpace()
+                ?? beatmapset?.Title.NullIfWhiteSpace()
                 ?? $"Beatmapset {parsedEvent.SetId}";
-            parsedEvent.MapperName = FirstNonEmpty(parsedEvent.MapperName)
-                ?? FirstNonEmpty(beatmapset?.Creator)
+            parsedEvent.MapperName = parsedEvent.MapperName.NullIfWhiteSpace()
+                ?? beatmapset?.Creator.NullIfWhiteSpace()
                 ?? "Unknown";
 
             var resolvedRulesets = await ResolveRulesetsAsync(parsedEvent, cancellationToken);
@@ -123,15 +124,15 @@ public sealed class BeatmapEventsFetcher(
                     profileCache[userId] = profile;
                 }
 
-                parsedEvent.ActorUsername = FirstNonEmpty(parsedEvent.ActorUsername)
-                    ?? FirstNonEmpty(profile?.Username)
+                parsedEvent.ActorUsername = parsedEvent.ActorUsername.NullIfWhiteSpace()
+                    ?? profile?.Username.NullIfWhiteSpace()
                     ?? sourceUserNameById.GetValueOrDefault(userId);
-                parsedEvent.ActorAvatarUrl = FirstNonEmpty(parsedEvent.ActorAvatarUrl)
-                    ?? FirstNonEmpty(profile?.AvatarUrl);
-                parsedEvent.ActorBadge = FirstNonEmpty(parsedEvent.ActorBadge)
-                    ?? FirstNonEmpty(profile?.Badge);
-                parsedEvent.ActorColor = FirstNonEmpty(parsedEvent.ActorColor)
-                    ?? FirstNonEmpty(profile?.Color);
+                parsedEvent.ActorAvatarUrl = parsedEvent.ActorAvatarUrl.NullIfWhiteSpace()
+                    ?? profile?.AvatarUrl.NullIfWhiteSpace();
+                parsedEvent.ActorBadge = parsedEvent.ActorBadge.NullIfWhiteSpace()
+                    ?? profile?.Badge.NullIfWhiteSpace();
+                parsedEvent.ActorColor = parsedEvent.ActorColor.NullIfWhiteSpace()
+                    ?? profile?.Color.NullIfWhiteSpace();
             }
 
             if (parsedEvent.EventType != FeedEventType.Ranked)
@@ -304,7 +305,7 @@ public sealed class BeatmapEventsFetcher(
 
                 if (!userNameCache.TryGetValue(userId, out userName))
                 {
-                    userName = FirstNonEmpty(profile?.Username)
+                    userName = profile?.Username.NullIfWhiteSpace()
                         ?? await osuApiService.GetUserNameAsync(userId, cancellationToken);
                     userNameCache[userId] = userName;
                 }
@@ -313,8 +314,8 @@ public sealed class BeatmapEventsFetcher(
             actions.Add(new RankedHistorySnapshot(
                 historyEvent.Type,
                 historyEvent.UserId,
-                string.IsNullOrWhiteSpace(userName) ? null : userName,
-                FirstNonEmpty(userColor)));
+                userName.NullIfWhiteSpace(),
+                userColor.NullIfWhiteSpace()));
         }
 
         return new RankedHistoryBuild(actions, historyWithActors.Count - trimmedHistory.Count);
@@ -560,7 +561,7 @@ public sealed class BeatmapEventsFetcher(
         try
         {
             var root = JsonNode.Parse(rawEvent) as JsonObject;
-            return FirstNonEmpty(root?.TryGetNestedString("beatmapset", "creator"));
+            return root?.TryGetNestedString("beatmapset", "creator").NullIfWhiteSpace();
         }
         catch
         {
@@ -578,7 +579,7 @@ public sealed class BeatmapEventsFetcher(
             if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
                 return $"{artist} - {title}";
 
-            return FirstNonEmpty(title);
+            return title.NullIfWhiteSpace();
         }
         catch
         {
@@ -591,7 +592,7 @@ public sealed class BeatmapEventsFetcher(
         try
         {
             var root = JsonNode.Parse(rawEvent) as JsonObject;
-            return FirstNonEmpty(root?.TryGetNestedString("user", "username"));
+            return root?.TryGetNestedString("user", "username").NullIfWhiteSpace();
         }
         catch
         {
@@ -633,7 +634,7 @@ public sealed class BeatmapEventsFetcher(
             ?? payload.TryGetNestedString("user", "color")
             ?? payload.TryGetNestedString("user", "colour");
 
-        var normalized = NormalizeColor(rawColor);
+        var normalized = rawColor.NormalizeHexColor();
         if (!string.IsNullOrWhiteSpace(normalized))
             return normalized;
 
@@ -643,30 +644,12 @@ public sealed class BeatmapEventsFetcher(
 
         foreach (var group in groups.OfType<JsonObject>())
         {
-            var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+            var groupColor = group.TryGetString("color", "colour").NormalizeHexColor();
             if (!string.IsNullOrWhiteSpace(groupColor))
                 return groupColor;
         }
 
         return null;
-    }
-
-    private static string? NormalizeColor(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith('#'))
-            trimmed = trimmed[1..];
-
-        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
-            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
-
-        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
-            return null;
-
-        return $"#{trimmed.ToUpperInvariant()}";
     }
 
     private static string? NormalizeMapMessage(FeedEventType eventType, string? message)
@@ -683,20 +666,7 @@ public sealed class BeatmapEventsFetcher(
         if (string.IsNullOrWhiteSpace(normalized))
             return null;
 
-        return Trim(normalized, 220);
-    }
-
-    private static string Trim(string value, int maxLength)
-    {
-        if (value.Length <= maxLength)
-            return value;
-
-        return value[..Math.Max(0, maxLength - 3)] + "...";
-    }
-
-    private static string? FirstNonEmpty(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value;
+        return normalized.Truncate(220);
     }
 
     private sealed record RankedHistorySnapshot(

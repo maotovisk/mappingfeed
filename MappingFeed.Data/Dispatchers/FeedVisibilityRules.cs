@@ -1,6 +1,7 @@
 using MappingFeed.Common.Data.Entities;
 using MappingFeed.Common.Data.Enums;
 using Microsoft.EntityFrameworkCore;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Data.Dispatchers;
 
@@ -18,8 +19,8 @@ public static class FeedVisibilityRules
         if (beatmapsetEvent.TriggeredBy != BanchoBotUserId)
             return false;
 
-        return ContainsIgnoreCase(beatmapsetEvent.Message, MapperUpdateResetMarker)
-               || ContainsIgnoreCase(beatmapsetEvent.RawEvent, MapperUpdateResetMarker);
+        return beatmapsetEvent.Message.ContainsIgnoreCase(MapperUpdateResetMarker)
+               || beatmapsetEvent.RawEvent.ContainsIgnoreCase(MapperUpdateResetMarker);
     }
 
     public static IQueryable<BeatmapsetEvent> ExcludeSuppressedFromPublicFeed(this IQueryable<BeatmapsetEvent> query)
@@ -29,13 +30,5 @@ public static class FeedVisibilityRules
             x.TriggeredBy != BanchoBotUserId ||
             !((x.Message != null && EF.Functions.Like(x.Message, MapperUpdateResetLikePattern)) ||
               (x.RawEvent != null && EF.Functions.Like(x.RawEvent, MapperUpdateResetLikePattern))));
-    }
-
-    private static bool ContainsIgnoreCase(string? value, string marker)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return false;
-
-        return value.Contains(marker, StringComparison.OrdinalIgnoreCase);
     }
 }

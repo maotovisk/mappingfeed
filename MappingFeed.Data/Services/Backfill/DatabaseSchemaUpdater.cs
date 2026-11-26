@@ -9,6 +9,7 @@ using MappingFeed.Common.Data.TransitionalRecords;
 using MappingFeed.Common.Json;
 using MappingFeed.Common.Services.Osu;
 using Microsoft.EntityFrameworkCore;
+using MappingFeed.Common.Extensions;
 
 namespace MappingFeed.Data.Services.Backfill;
 
@@ -704,7 +705,7 @@ public static class DatabaseSchemaUpdater
             {
                 if (string.IsNullOrWhiteSpace(row.BeatmapsetTitle))
                 {
-                    var resolvedTitle = FirstNonEmpty(beatmapset?.Title) ?? $"Beatmapset {setId}";
+                    var resolvedTitle = beatmapset?.Title.NullIfWhiteSpace() ?? $"Beatmapset {setId}";
                     if (!string.Equals(row.BeatmapsetTitle, resolvedTitle, StringComparison.Ordinal))
                     {
                         row.BeatmapsetTitle = resolvedTitle;
@@ -714,7 +715,7 @@ public static class DatabaseSchemaUpdater
 
                 if (string.IsNullOrWhiteSpace(row.MapperName))
                 {
-                    var resolvedMapper = FirstNonEmpty(beatmapset?.Creator) ?? "Unknown";
+                    var resolvedMapper = beatmapset?.Creator.NullIfWhiteSpace() ?? "Unknown";
                     if (!string.Equals(row.MapperName, resolvedMapper, StringComparison.Ordinal))
                     {
                         row.MapperName = resolvedMapper;
@@ -788,7 +789,7 @@ public static class DatabaseSchemaUpdater
             var changed = false;
             foreach (var row in rows)
             {
-                var resolvedUserName = FirstNonEmpty(profile?.Username) ?? FirstNonEmpty(fallbackUserName);
+                var resolvedUserName = profile?.Username.NullIfWhiteSpace() ?? fallbackUserName.NullIfWhiteSpace();
 
                 if (string.IsNullOrWhiteSpace(row.ActorUsername) && !string.IsNullOrWhiteSpace(resolvedUserName))
                 {
@@ -1001,7 +1002,7 @@ public static class DatabaseSchemaUpdater
             var changed = false;
             foreach (var row in rows)
             {
-                var resolvedUserName = FirstNonEmpty(profile?.Username) ?? FirstNonEmpty(fallbackUserName);
+                var resolvedUserName = profile?.Username.NullIfWhiteSpace() ?? fallbackUserName.NullIfWhiteSpace();
 
                 if (string.IsNullOrWhiteSpace(row.UserName) && !string.IsNullOrWhiteSpace(resolvedUserName))
                 {
@@ -1061,8 +1062,8 @@ public static class DatabaseSchemaUpdater
                 continue;
             }
 
-            var resolvedGroupName = FirstNonEmpty(groupInfo?.Name);
-            var resolvedGroupColor = NormalizeColor(groupInfo?.Color);
+            var resolvedGroupName = groupInfo?.Name.NullIfWhiteSpace();
+            var resolvedGroupColor = groupInfo?.Color.NormalizeHexColor();
 
             if (string.IsNullOrWhiteSpace(resolvedGroupName) && string.IsNullOrWhiteSpace(resolvedGroupColor))
                 continue;
@@ -1240,7 +1241,7 @@ public static class DatabaseSchemaUpdater
 
                 if (!userNameCache.TryGetValue(userId, out userName))
                 {
-                    userName = FirstNonEmpty(profile?.Username);
+                    userName = profile?.Username.NullIfWhiteSpace();
                     if (string.IsNullOrWhiteSpace(userName))
                     {
                         userName = await context.InvokeAsync(
@@ -1255,8 +1256,8 @@ public static class DatabaseSchemaUpdater
             actions.Add(new RankedHistorySnapshot(
                 historyEvent.Type,
                 historyEvent.UserId,
-                string.IsNullOrWhiteSpace(userName) ? null : userName,
-                FirstNonEmpty(userColor)));
+                userName.NullIfWhiteSpace(),
+                userColor.NullIfWhiteSpace()));
         }
 
         return new RankedHistoryBuild(actions, historyWithActors.Count - trimmedHistory.Count);
@@ -1431,12 +1432,7 @@ public static class DatabaseSchemaUpdater
         if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
             return $"{artist} - {title}";
 
-        return FirstNonEmpty(title);
-    }
-
-    private static string? FirstNonEmpty(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? null : value;
+        return title.NullIfWhiteSpace();
     }
 
     private static string? TryExtractGroupPlaymodes(JsonObject root)
@@ -1472,7 +1468,7 @@ public static class DatabaseSchemaUpdater
             ?? root.TryGetNestedString("group", "color")
             ?? root.TryGetNestedString("group", "colour");
 
-        return NormalizeColor(rawColor);
+        return rawColor.NormalizeHexColor();
     }
 
     private static string? TryExtractActorColor(JsonObject root)
@@ -1481,7 +1477,7 @@ public static class DatabaseSchemaUpdater
             ?? root.TryGetNestedString("user", "color")
             ?? root.TryGetNestedString("user", "colour");
 
-        var normalized = NormalizeColor(rawColor);
+        var normalized = rawColor.NormalizeHexColor();
         if (!string.IsNullOrWhiteSpace(normalized))
             return normalized;
 
@@ -1490,30 +1486,12 @@ public static class DatabaseSchemaUpdater
 
         foreach (var group in groups.OfType<JsonObject>())
         {
-            var groupColor = NormalizeColor(group.TryGetString("color", "colour"));
+            var groupColor = group.TryGetString("color", "colour").NormalizeHexColor();
             if (!string.IsNullOrWhiteSpace(groupColor))
                 return groupColor;
         }
 
         return null;
-    }
-
-    private static string? NormalizeColor(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith('#'))
-            trimmed = trimmed[1..];
-
-        if (trimmed.Length == 3 && trimmed.All(Uri.IsHexDigit))
-            trimmed = string.Concat(trimmed.Select(x => $"{x}{x}"));
-
-        if (trimmed.Length != 6 || !trimmed.All(Uri.IsHexDigit))
-            return null;
-
-        return $"#{trimmed.ToUpperInvariant()}";
     }
 
     private static string? ReadNullableString(DbDataReader reader, int ordinal)
